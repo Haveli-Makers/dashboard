@@ -2,7 +2,6 @@ import streamlit as st
 
 from frontend.components.backtesting import backtesting_section
 from frontend.components.config_loader import get_default_config_loader
-from frontend.components.save_config import render_save_config
 
 # Import submodules
 from frontend.pages.config.pmm_simple.user_inputs import user_inputs
@@ -16,7 +15,7 @@ initialize_st_page(title="PMM Simple", icon="👨‍🏫")
 backend_api_client = get_backend_api_client()
 
 # Page content
-st.text("This tool will let you create a config for PMM Simple, backtest and upload it to the Backend API.")
+st.text("This tool will let you create a config for PMM Simple and backtest it.")
 get_default_config_loader("pmm_simple")
 
 inputs = user_inputs()
@@ -42,4 +41,4 @@ if bt_results:
         st.write("---")
         render_close_types(bt_results["results"])
 st.write("---")
-render_save_config(st.session_state["default_config"]["id"], st.session_state["default_config"])
+st.info("Upload Config is not supported for now, this config is for test purpose only.")

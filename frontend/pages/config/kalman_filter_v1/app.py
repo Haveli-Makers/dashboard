@@ -2,13 +2,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yaml
+from backend.services.backend_api_client import BackendAPIClient
 from hummingbot.connector.connector_base import OrderType
 from plotly.subplots import make_subplots
 from pykalman import KalmanFilter
 
-from backend.services.backend_api_client import BackendAPIClient
 from CONFIG import BACKEND_API_HOST, BACKEND_API_PORT
-from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.st_utils import initialize_st_page
 
 # Initialize the Streamlit page
 initialize_st_page(title="Kalman Filter V1", icon="📈", initial_sidebar_state="expanded")
@@ -221,16 +221,5 @@ with c3:
         file_name=f'{id.lower()}.yml',
         mime='text/yaml'
     )
-    upload_config_to_backend = st.button("Upload Config to Hummingbot-API")
 
-if upload_config_to_backend:
-    backend_api_client = get_backend_api_client()
-    try:
-        config_name = config.get("id", id)
-        backend_api_client.controllers.create_or_update_controller_config(
-            config_name=config_name,
-            config=config
-        )
-        st.success("Config uploaded successfully!")
-    except Exception as e:
-        st.error(f"Failed to upload config: {e}")
+st.info("Upload Config is not supported for now, this config is for test purpose only.")

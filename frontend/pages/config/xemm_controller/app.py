@@ -2,13 +2,13 @@ import plotly.graph_objects as go
 import streamlit as st
 import yaml
 
-from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.st_utils import initialize_st_page
 
 # Initialize the Streamlit page
 initialize_st_page(title="XEMM Multiple Levels", icon="⚡️")
 
 # Page content
-st.text("This tool will let you create a config for XEMM Controller and upload it to the BackendAPI.")
+st.text("This tool will let you create a config for XEMM Controller.")
 st.write("---")
 c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
 
@@ -126,16 +126,6 @@ config = {
 yaml_config = yaml.dump(config, default_flow_style=False)
 
 with c3:
-    upload_config_to_backend = st.button("Upload Config to Hummingbot-API")
+    st.empty()
 
-if upload_config_to_backend:
-    backend_api_client = get_backend_api_client()
-    try:
-        config_name = config.get("id", id.lower())
-        backend_api_client.controllers.create_or_update_controller_config(
-            config_name=config_name,
-            config=config
-        )
-        st.success("Config uploaded successfully!")
-    except Exception as e:
-        st.error(f"Failed to upload config: {e}")
+st.info("Upload Config is not supported for now, this config is for test purpose only.")

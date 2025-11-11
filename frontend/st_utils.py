@@ -17,12 +17,16 @@ from frontend.pages.permissions import main_page, private_pages, public_pages
 def initialize_st_page(title: Optional[str] = None, icon: str = "🤖", layout: Layout = 'wide',
                        initial_sidebar_state: InitialSideBarState = "expanded",
                        show_readme: bool = True):
-    st.set_page_config(
-        page_title=title,
-        page_icon=icon,
-        layout=layout,
-        initial_sidebar_state=initial_sidebar_state
-    )
+    # Ensure page configuration is only applied once per rerun to avoid Streamlit errors
+    config_state_key = "_page_configured"
+    if config_state_key not in st.session_state or not st.session_state[config_state_key]:
+        st.set_page_config(
+            page_title=title,
+            page_icon=icon,
+            layout=layout,
+            initial_sidebar_state=initial_sidebar_state
+        )
+        st.session_state[config_state_key] = True
 
     # Add page title
     if title:

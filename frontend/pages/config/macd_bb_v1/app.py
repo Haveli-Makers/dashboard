@@ -3,7 +3,6 @@ from plotly.subplots import make_subplots
 
 from frontend.components.backtesting import backtesting_section
 from frontend.components.config_loader import get_default_config_loader
-from frontend.components.save_config import render_save_config
 from frontend.pages.config.macd_bb_v1.user_inputs import user_inputs
 from frontend.pages.config.utils import get_candles
 from frontend.st_utils import get_backend_api_client, initialize_st_page
@@ -62,4 +61,4 @@ if bt_results:
         st.write("---")
         render_close_types(bt_results["results"])
 st.write("---")
-render_save_config(st.session_state["default_config"]["id"], st.session_state["default_config"])
+st.info("Upload Config is not supported for now, this config is for test purpose only.")

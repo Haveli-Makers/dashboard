@@ -6,7 +6,6 @@ from plotly.subplots import make_subplots
 from frontend.components.backtesting import backtesting_section
 from frontend.components.config_loader import get_default_config_loader
 from frontend.components.executors_distribution import get_executors_distribution_inputs
-from frontend.components.save_config import render_save_config
 from frontend.pages.config.pmm_dynamic.spread_and_price_multipliers import get_pmm_dynamic_multipliers
 from frontend.pages.config.pmm_dynamic.user_inputs import user_inputs
 from frontend.pages.config.utils import get_candles
@@ -24,7 +23,7 @@ initialize_st_page(title="PMM Dynamic", icon="👩‍🏫")
 backend_api_client = get_backend_api_client()
 
 # Page content
-st.text("This tool will let you create a config for PMM Dynamic, backtest and upload it to the Backend API.")
+st.text("This tool will let you create a config for PMM Dynamic and backtest it.")
 get_default_config_loader("pmm_dynamic")
 # Get user inputs
 inputs = user_inputs()
@@ -91,4 +90,4 @@ if bt_results:
         st.write("---")
         render_close_types(bt_results["results"])
 st.write("---")
-render_save_config(st.session_state["default_config"]["id"], st.session_state["default_config"])
+st.info("Upload Config is not supported for now, this config is for test purpose only.")

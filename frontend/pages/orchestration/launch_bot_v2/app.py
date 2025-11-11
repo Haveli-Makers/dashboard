@@ -1,4 +1,3 @@
-import re
 import time
 
 import pandas as pd
@@ -22,18 +21,18 @@ def get_controller_configs():
 
 
 def filter_hummingbot_images(images):
-    """Filter images to only show Hummingbot-related ones."""
-    hummingbot_images = []
-    pattern = r'.+/hummingbot:'
+    """Filter images to only show Havelimakers-related ones."""
+    havelimakers_images = []
+    # pattern = r'.+/havelimakers:'
 
     for image in images:
         try:
-            if re.match(pattern, image):
-                hummingbot_images.append(image)
+            if image.startswith("havelimakers:"):
+                havelimakers_images.append(image)
         except Exception:
             continue
 
-    return hummingbot_images
+    return havelimakers_images
 
 
 def launch_new_bot(bot_name, image_name, credentials, selected_controllers, max_global_drawdown,
@@ -43,12 +42,13 @@ def launch_new_bot(bot_name, image_name, credentials, selected_controllers, max_
         st.warning("You need to define the bot name.")
         return False
     if not image_name:
-        st.warning("You need to select the hummingbot image.")
+        st.warning("You need to select the havelimakers image.")
         return False
     if not selected_controllers:
         st.warning("You need to select the controllers configs. Please select at least one controller "
                    "config by clicking on the checkbox.")
         return False
+    st.info(f"🚀 Launching new bot with name: {bot_name}, image: {image_name}")
 
     start_time_str = time.strftime("%Y%m%d-%H%M")
     full_bot_name = f"{bot_name}-{start_time_str}"
@@ -85,7 +85,7 @@ def delete_selected_configs(selected_controllers):
             for config in selected_controllers:
                 # Remove .yml extension if present
                 config_name = config.replace(".yml", "")
-                response = backend_api_client.controllers.delete_controller_config(config_name)
+                backend_api_client.controllers.delete_controller_config(config_name)
                 st.success(f"Deleted {config_name}")
             return True
 
@@ -134,7 +134,7 @@ with st.container(border=True):
 
     with col3:
         try:
-            all_images = backend_api_client.docker.get_available_images("hummingbot")
+            all_images = backend_api_client.docker.get_available_images("havelimakers")
             available_images = filter_hummingbot_images(all_images)
 
             if not available_images:
@@ -142,21 +142,22 @@ with st.container(border=True):
                 available_images = ["hummingbot/hummingbot:latest"]
 
             # Ensure default image is in the list
-            default_image = "hummingbot/hummingbot:latest"
+            default_image = "havelimakers:latest"
             if default_image not in available_images:
                 available_images.insert(0, default_image)
 
             image_name = st.selectbox(
-                "Hummingbot Image",
+                "Bot Image",
                 options=available_images,
                 index=0,
                 key="image_select"
             )
+            st.write(f"Selected Image: {image_name}")
         except Exception as e:
             st.error(f"Failed to fetch available images: {e}")
             image_name = st.text_input(
-                "Hummingbot Image",
-                value="hummingbot/hummingbot:latest",
+                "Bot Image",
+                value="havelimakers:latest",
                 key="image_input"
             )
 
@@ -209,7 +210,7 @@ with st.container(border=True):
             # Skip configs without an ID
             st.warning(f"Config missing 'id' field: {config}")
             continue
-            
+
         config_data = config.get("config", config)  # New format has config nested
 
         connector_name = config_data.get("connector_name", "Unknown")
@@ -291,6 +292,7 @@ with st.container(border=True):
             if st.button("🚀 Deploy Bot", type=deploy_button_style, use_container_width=True):
                 if selected_controllers:
                     with st.spinner('🚀 Starting Bot... This process may take a few seconds'):
+                        st.info(f"🚀 Launching new bot with name: {bot_name}, image: {image_name}")
                         if launch_new_bot(bot_name, image_name, credentials, selected_controllers,
                                           max_global_drawdown, max_controller_drawdown):
                             st.rerun()

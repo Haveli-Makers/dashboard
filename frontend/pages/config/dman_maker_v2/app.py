@@ -3,7 +3,6 @@ import streamlit as st
 from frontend.components.backtesting import backtesting_section
 from frontend.components.config_loader import get_default_config_loader
 from frontend.components.dca_distribution import get_dca_distribution_inputs
-from frontend.components.save_config import render_save_config
 from frontend.pages.config.dman_maker_v2.user_inputs import user_inputs
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 from frontend.visualization.backtesting import create_backtesting_figure
@@ -16,7 +15,7 @@ initialize_st_page(title="D-Man Maker V2", icon="🧙‍♂️")
 backend_api_client = get_backend_api_client()
 
 # Page content
-st.text("This tool will let you create a config for D-Man Maker V2 and upload it to the BackendAPI.")
+st.text("This tool will let you create a config for D-Man Maker V2.")
 get_default_config_loader("dman_maker_v2")
 
 inputs = user_inputs()
@@ -65,4 +64,4 @@ if bt_results:
         st.write("---")
         render_close_types(bt_results["results"])
 st.write("---")
-render_save_config(st.session_state["default_config"]["id"], st.session_state["default_config"])
+st.info("Upload Config is not supported for now, this config is for test purpose only.")
