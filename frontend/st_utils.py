@@ -73,8 +73,7 @@ def style_metric_cards():
 def get_backend_api_client():
     import atexit
 
-    from hummingbot_api_client import SyncHummingbotAPIClient
-
+    from api_client.sync_client import SyncHummingbotAPIClient
     from CONFIG import BACKEND_API_HOST, BACKEND_API_PASSWORD, BACKEND_API_PORT, BACKEND_API_USERNAME
 
     # Use Streamlit session state to store singleton instance
