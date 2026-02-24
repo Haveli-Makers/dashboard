@@ -5,11 +5,22 @@ channels:
 dependencies:
   - python=3.12
   - sqlalchemy
+  - fastapi
+  - uvicorn
+  - boto3
+  - libcxx                
+  - python-dotenv
+  - pandas>=2.3.2
+  - numba>=0.61.2
+  - numpy>=2.2.6
+  - pandas-ta>=0.4.71b
+  - tqdm>=4.67.1
   - pip
   - pip:
       - hummingbot
       - hummingbot-api-client
       - nest_asyncio
+      - docker
       - pydantic
       - streamlit>=1.36.0
       - watchdog
@@ -25,3 +36,18 @@ dependencies:
       - flake8
       - isort
       - pre-commit
+      - msgpack>=1.0.5
+      - flake8
+      - isort
+      - pre-commit
+      - logfire
+      - logfire[fastapi]
+      - logfire[system-metrics]
+      - aiomqtt>=2.0.0
+      - sqlalchemy>=2.0.0
+      - asyncpg
+      - psycopg2-binary
+      - greenlet
+      - pydantic-settings
+
+
