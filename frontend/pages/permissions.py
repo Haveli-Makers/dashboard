@@ -14,6 +14,12 @@ def public_pages():
                 icon="💹",
                 url_path="download_candles"
             ),
+            st.Page(
+                "frontend/pages/data/download_spread/app.py",
+                title="Download Spread",
+                icon="📊",
+                url_path="download_spread"
+            ),
         ],
         # "Community Pages": [
         #     st.Page("frontend/pages/data/tvl_vs_mcap/app.py", title="TVL vs Market Cap", icon="🦉", url_path="tvl_vs_mcap"),
