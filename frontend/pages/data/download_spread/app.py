@@ -28,6 +28,7 @@ if get_data_button:
     if not connectors:
         st.error("Please select at least one exchange.")
     else:
+        st.session_state.pop("download_spread__spread_df", None)
         try:
             pairs_list = [p.strip() for p in trading_pairs.split(",") if p.strip()]
 
@@ -83,7 +84,7 @@ if get_data_button:
                         vol_merge = volume_df.copy()
                         vol_merge["_merge_pair"] = vol_merge["trading_pair"].astype(str).str.strip().str.upper()
                         vol_merge["_merge_connector"] = vol_merge["exchange"].astype(str).str.strip().str.lower()
-                        vol_merge.drop(columns=["exchange", "trading_pair"], inplace=True)
+                        vol_merge.drop(columns=["exchange", "trading_pair"], inplace=True, errors="ignore")
 
                         spread_df = spread_df.merge(
                             vol_merge,

@@ -441,7 +441,6 @@ class MarketDataRouter(BaseRouter):
         Args:
             pair: Trading pair filter (e.g., "BTC-USDT")
             connector: Connector filter (e.g., "binance")
-            limit: Maximum number of records to return (default: 100)
 
         Returns:
             Dictionary with spread data samples and count
@@ -451,3 +450,4 @@ class MarketDataRouter(BaseRouter):
             data = await client.market_data.get_spread_data(pair="BTC-USDT", connector="binance")
         """
         return await self._get(f"/market-data/spread-data/{connector}/{pair}")
+
