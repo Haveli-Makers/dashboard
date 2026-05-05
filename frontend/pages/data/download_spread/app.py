@@ -1,3 +1,4 @@
+import datetime
 import traceback
 
 import pandas as pd
@@ -122,7 +123,7 @@ if "download_spread__spread_df" in st.session_state:
         st.warning("Some pairs had errors:\n- " + "\n- ".join(failed_pairs))
 
     st.subheader("Spread Data Details")
-    st.caption("Select a row to expand and view all raw samples for that trading pair.")
+    st.caption("Select a row to expand and view all samples for that trading pair.")
 
     display_df = spread_df.drop(columns=["sample_count"], errors="ignore")
     selection = st.dataframe(
@@ -162,7 +163,7 @@ if "download_spread__spread_df" in st.session_state:
         selected_pair = row["pair"]
         selected_connector = row["connector"]
 
-        st.subheader(f"Raw Samples — {selected_connector} / {selected_pair}")
+        st.subheader(f"Samples — {selected_connector} / {selected_pair}")
         with st.spinner(f"Fetching samples for {selected_pair} on {selected_connector}..."):
             try:
                 samples_response = backend_api_client.market_data.get_spread_data(
@@ -171,11 +172,14 @@ if "download_spread__spread_df" in st.session_state:
                 )
                 if samples_response and samples_response.get("data"):
                     samples_df = pd.DataFrame(samples_response["data"])
+                    if "timestamp" in samples_df.columns:
+                        local_tz = datetime.datetime.now().astimezone().tzinfo
+                        samples_df["timestamp"] = pd.to_datetime(samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
                     st.dataframe(samples_df, use_container_width=True)
                     st.caption(f"{samples_response.get('count', len(samples_df))} samples retrieved")
                     samples_csv = samples_df.to_csv(index=False)
                     st.download_button(
-                        label="Download Raw Samples as CSV",
+                        label="Download Samples as CSV",
                         data=samples_csv,
                         file_name=f"samples_{selected_connector}_{selected_pair.replace('-', '')}_{window_hours_used}h.csv",
                         mime="text/csv",
