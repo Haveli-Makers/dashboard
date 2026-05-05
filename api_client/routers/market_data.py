@@ -433,8 +433,7 @@ class MarketDataRouter(BaseRouter):
     async def get_spread_data(
         self,
         pair: str,
-        connector: str,
-        limit: int = 100
+        connector: str
     ) -> Dict[str, Any]:
         """
         Get raw spread samples from database for a specific connector and trading pair.
