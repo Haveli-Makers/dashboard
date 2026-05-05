@@ -1,3 +1,6 @@
+import time
+import traceback
+
 import pandas as pd
 import streamlit as st
 
@@ -27,32 +30,104 @@ if get_data_button:
         st.error("Please select at least one exchange.")
     else:
         try:
+            pairs_list = [p.strip() for p in trading_pairs.split(",") if p.strip()]
+
             with st.spinner("Fetching spread data..."):
                 spread_response = backend_api_client.market_data.get_spread_averages(
-                    pairs=trading_pairs.split(","),
+                    pairs=pairs_list if pairs_list else [],
                     connectors=connectors,
                     window_hours=window_hours
                 )
+
+            volume_pairs_list = pairs_list
+            if not volume_pairs_list and spread_response and spread_response.get("data"):
+                spread_data_temp = pd.DataFrame(spread_response["data"])
+                if not spread_data_temp.empty:
+                    pair_col = "trading_pair" if "trading_pair" in spread_data_temp.columns else "pair"
+                    volume_pairs_list = spread_data_temp[pair_col].dropna().unique().tolist()
+
+            volume_records = []
+            failed_pairs = []
+            if volume_pairs_list:
+                with st.spinner("Fetching volume data..."):
+                    for connector in connectors:
+                        try:
+                            vol_response = backend_api_client.market_data.get_24h_volume(
+                                exchange=connector,
+                                trading_pairs=volume_pairs_list
+                            )
+                            returned_pairs = set()
+                            if vol_response:
+                                if vol_response.get("data"):
+                                    for rec in vol_response["data"]:
+                                        volume_records.append(rec)
+                                        returned_pairs.add(rec.get("trading_pair", "").strip().upper())
+                                if vol_response.get("errors"):
+                                    for err in vol_response["errors"]:
+                                        if "deprecated" in err.get("error", "").lower():
+                                            continue
+                                        failed_pairs.append(f"{err['pair']} on {connector}: {err['error']}")
+                            missing_pairs = [
+                                p for p in volume_pairs_list
+                                if p.strip().upper() not in returned_pairs
+                            ]
+                            for pair in missing_pairs:
+                                time.sleep(1)
+                                try:
+                                    vol_response = backend_api_client.market_data.get_24h_volume(
+                                        exchange=connector,
+                                        trading_pairs=[pair]
+                                    )
+                                    if vol_response and vol_response.get("data"):
+                                        volume_records.extend(vol_response["data"])
+                                    if vol_response and vol_response.get("errors"):
+                                        for err in vol_response["errors"]:
+                                            if "deprecated" in err.get("error", "").lower():
+                                                continue
+                                            failed_pairs.append(f"{err['pair']} on {connector}: {err['error']}")
+                                except Exception:
+                                    failed_pairs.append(f"Failed to fetch volume for {pair} on {connector}")
+                        except Exception:
+                            failed_pairs.append(f"Failed to fetch volume for {connector}")
+
+            if volume_records:
+                volume_df = pd.DataFrame(volume_records)
+                volume_df.drop(columns=["symbol"], inplace=True, errors="ignore")
+                volume_df["quote_volume"] = volume_df["quote_volume"].replace(0, "-")
+            else:
+                volume_df = pd.DataFrame()
+
             if spread_response and spread_response.get("data"):
                 spread_data = spread_response["data"]
                 spread_df = pd.DataFrame(spread_data)
 
                 if not spread_df.empty:
-                    # Display detailed data table
-                    st.subheader("Spread Data Details")
-                    st.dataframe(spread_df, use_container_width=True)
+                    if not volume_df.empty:
+                        spread_pair_col = "trading_pair" if "trading_pair" in spread_df.columns else "pair"
+                        spread_connector_col = "connector" if "connector" in spread_df.columns else "exchange"
 
-                    # Generating CSV and download button
-                    csv = spread_df.to_csv(index=False)
-                    connectors_str = "_".join(connectors)
-                    pairs_str = "_".join([p.replace("-", "") for p in trading_pairs.split(",")])
-                    filename = f"spread_{connectors_str}_{pairs_str}_{window_hours}h.csv"
-                    st.download_button(
-                        label="Download Spread Data as CSV",
-                        data=csv,
-                        file_name=filename,
-                        mime='text/csv',
-                    )
+                        spread_df["_merge_pair"] = spread_df[spread_pair_col].astype(str).str.strip().str.upper()
+                        spread_df["_merge_connector"] = spread_df[spread_connector_col].astype(str).str.strip().str.lower()
+
+                        vol_merge = volume_df.copy()
+                        vol_merge["_merge_pair"] = vol_merge["trading_pair"].astype(str).str.strip().str.upper()
+                        vol_merge["_merge_connector"] = vol_merge["exchange"].astype(str).str.strip().str.lower()
+                        vol_merge.drop(columns=["exchange", "trading_pair"], inplace=True)
+
+                        spread_df = spread_df.merge(
+                            vol_merge,
+                            on=["_merge_connector", "_merge_pair"],
+                            how="left"
+                        )
+                        spread_df.drop(columns=["_merge_connector", "_merge_pair"], inplace=True, errors="ignore")
+
+                    # Persist in session state so row-selection reruns don't lose data
+                    st.session_state["spread_df"] = spread_df
+                    st.session_state["volume_df"] = volume_df
+                    st.session_state["failed_pairs"] = failed_pairs
+                    st.session_state["spread_pairs_list"] = pairs_list
+                    st.session_state["spread_connectors"] = connectors
+                    st.session_state["spread_window_hours"] = window_hours
                 else:
                     st.warning("No spread data available for the selected parameters.")
             else:
@@ -60,4 +135,83 @@ if get_data_button:
 
         except Exception as e:
             st.error(f"Failed to fetch spread data: {str(e)}")
-            st.info("Please make sure the backend server is running and try again.")
+            st.code(traceback.format_exc(), language="python")
+
+# Render results from session state (persists across row-selection reruns)
+if "spread_df" in st.session_state:
+    spread_df = st.session_state["spread_df"]
+    volume_df = st.session_state["volume_df"]
+    failed_pairs = st.session_state.get("failed_pairs", [])
+    pairs_list = st.session_state.get("spread_pairs_list", [])
+    connectors_used = st.session_state.get("spread_connectors", connectors)
+    window_hours_used = st.session_state.get("spread_window_hours", window_hours)
+
+    if failed_pairs:
+        st.warning("Some pairs had errors:\n- " + "\n- ".join(failed_pairs))
+
+    st.subheader("Spread Data Details")
+    st.caption("Select a row to expand and view all raw samples for that trading pair.")
+
+    display_df = spread_df.drop(columns=["sample_count"], errors="ignore")
+    selection = st.dataframe(
+        display_df,
+        use_container_width=True,
+        selection_mode="single-row",
+        on_select="rerun",
+        key="spread_summary_table",
+    )
+
+    connectors_str = "_".join(connectors_used)
+    pairs_str = "_".join([p.replace("-", "") for p in pairs_list])
+    spread_csv = display_df.to_csv(index=False)
+    st.download_button(
+        label="Download Spread Data as CSV",
+        data=spread_csv,
+        file_name=f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.csv",
+        mime="text/csv",
+        key="dl_spread",
+    )
+
+    vol_cols = ["base_volume", "last_price", "quote_volume"]
+    vol_cols_present = [c for c in vol_cols if c in spread_df.columns]
+    merge_failed = (
+        not vol_cols_present
+        or (vol_cols_present and spread_df[vol_cols_present].dropna(how="all").empty)
+    )
+    if not volume_df.empty and merge_failed:
+        st.subheader("Volume Data")
+        st.dataframe(volume_df, use_container_width=True)
+
+    # Expand raw samples when a row is selected
+    selected_rows = selection.selection.rows if selection and selection.selection else []
+    if selected_rows:
+        selected_idx = selected_rows[0]
+        row = spread_df.iloc[selected_idx]
+        pair_col = "trading_pair" if "trading_pair" in spread_df.columns else "pair"
+        connector_col = "connector" if "connector" in spread_df.columns else "exchange"
+        selected_pair = row[pair_col]
+        selected_connector = row[connector_col]
+
+        st.subheader(f"Raw Samples — {selected_connector} / {selected_pair}")
+        with st.spinner(f"Fetching samples for {selected_pair} on {selected_connector}..."):
+            try:
+                samples_response = backend_api_client.market_data.get_spread_data(
+                    pair=selected_pair,
+                    connector=selected_connector,
+                )
+                if samples_response and samples_response.get("data"):
+                    samples_df = pd.DataFrame(samples_response["data"])
+                    st.dataframe(samples_df, use_container_width=True)
+                    st.caption(f"{samples_response.get('count', len(samples_df))} samples retrieved")
+                    samples_csv = samples_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Raw Samples as CSV",
+                        data=samples_csv,
+                        file_name=f"samples_{selected_connector}_{selected_pair.replace('-', '')}_{window_hours_used}h.csv",
+                        mime="text/csv",
+                        key="dl_samples",
+                    )
+                else:
+                    st.info("No raw samples found for this trading pair.")
+            except Exception as samples_err:
+                st.error(f"Failed to fetch samples: {str(samples_err)}")
