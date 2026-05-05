@@ -94,7 +94,6 @@ if get_data_button:
                         )
                         spread_df.drop(columns=["_merge_connector", "_merge_pair"], inplace=True, errors="ignore")
 
-                    # Persist in session state so row-selection reruns don't lose data
                     st.session_state["download_spread__spread_df"] = spread_df
                     st.session_state["download_spread__volume_df"] = volume_df
                     st.session_state["download_spread__failed_pairs"] = failed_pairs
@@ -110,7 +109,6 @@ if get_data_button:
             st.error(f"Failed to fetch spread data: {str(e)}")
             st.code(traceback.format_exc(), language="python")
 
-# Render results from session state (persists across row-selection reruns)
 if "download_spread__spread_df" in st.session_state:
     spread_df = st.session_state["download_spread__spread_df"]
     volume_df = st.session_state["download_spread__volume_df"]
