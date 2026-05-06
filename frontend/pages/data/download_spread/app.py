@@ -139,7 +139,6 @@ if get_data_button:
                     spread_df["quote_volume"] = spread_df["quote_volume"].replace(0, "-")
 
                 st.session_state["download_spread__spread_df"] = spread_df
-                st.session_state["download_spread__volume_df"] = volume_df
                 st.session_state["download_spread__failed_pairs"] = failed_pairs
                 st.session_state["download_spread__pairs_list"] = pairs_list
                 st.session_state["download_spread__connectors"] = connectors
@@ -164,7 +163,6 @@ if get_data_button:
                                 spread_df["quote_volume"] = spread_df["quote_volume"].replace(0, "-")
 
                         st.session_state["download_spread__spread_df"] = spread_df
-                        st.session_state["download_spread__volume_df"] = volume_df
                         st.session_state["download_spread__failed_pairs"] = failed_pairs
                         st.session_state["download_spread__pairs_list"] = pairs_list
                         st.session_state["download_spread__connectors"] = connectors
@@ -180,7 +178,6 @@ if get_data_button:
 
 if "download_spread__spread_df" in st.session_state:
     spread_df = st.session_state["download_spread__spread_df"]
-    volume_df = st.session_state["download_spread__volume_df"]
     failed_pairs = st.session_state.get("download_spread__failed_pairs", [])
     pairs_list = st.session_state.get("download_spread__pairs_list", [])
     connectors_used = st.session_state.get("download_spread__connectors", connectors)
@@ -211,16 +208,6 @@ if "download_spread__spread_df" in st.session_state:
         mime="text/csv",
         key="dl_spread",
     )
-
-    vol_cols = ["base_volume", "last_price", "quote_volume"]
-    vol_cols_present = [c for c in vol_cols if c in spread_df.columns]
-    merge_failed = (
-        not vol_cols_present
-        or spread_df[vol_cols_present].dropna(how="all").empty
-    )
-    if not volume_df.empty and merge_failed:
-        st.subheader("Volume Data")
-        st.dataframe(volume_df, use_container_width=True)
 
     # Expand raw samples when a row is selected
     selected_rows = selection.selection.rows if selection.selection else []
