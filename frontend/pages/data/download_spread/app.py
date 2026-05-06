@@ -40,32 +40,40 @@ if get_data_button:
                     window_hours=window_hours
                 )
 
-            volume_pairs_list = pairs_list
-            if not volume_pairs_list and spread_response and spread_response.get("data"):
+            volume_pairs_by_connector = {}
+            if not pairs_list and spread_response and spread_response.get("data"):
                 spread_data_temp = pd.DataFrame(spread_response["data"])
-                if not spread_data_temp.empty:
-                    volume_pairs_list = spread_data_temp["pair"].dropna().unique().tolist()
+                if not spread_data_temp.empty and "connector" in spread_data_temp.columns:
+                    for _conn in connectors:
+                        conn_pairs = (
+                            spread_data_temp[
+                                spread_data_temp["connector"].str.lower() == _conn.lower()
+                            ]["pair"].dropna().unique().tolist()
+                        )
+                        volume_pairs_by_connector[_conn] = conn_pairs
 
             volume_records = []
             failed_pairs = []
-            if volume_pairs_list:
-                with st.spinner("Fetching volume data..."):
-                    for connector in connectors:
-                        try:
-                            vol_response = backend_api_client.market_data.get_24h_volume(
-                                exchange=connector,
-                                trading_pairs=volume_pairs_list
-                            )
-                            if vol_response:
-                                if vol_response.get("data"):
-                                    volume_records.extend(vol_response["data"])
-                                if vol_response.get("errors"):
-                                    for err in vol_response["errors"]:
-                                        if "deprecated" in err.get("error", "").lower():
-                                            continue
-                                        failed_pairs.append(f"{err['pair']} on {connector}: {err['error']}")
-                        except Exception:
-                            failed_pairs.append(f"Failed to fetch volume for {connector}")
+            with st.spinner("Fetching volume data..."):
+                for connector in connectors:
+                    volume_pairs_list = pairs_list if pairs_list else volume_pairs_by_connector.get(connector, [])
+                    if not volume_pairs_list:
+                        continue
+                    try:
+                        vol_response = backend_api_client.market_data.get_24h_volume(
+                            exchange=connector,
+                            trading_pairs=volume_pairs_list
+                        )
+                        if vol_response:
+                            if vol_response.get("data"):
+                                volume_records.extend(vol_response["data"])
+                            if vol_response.get("errors"):
+                                for err in vol_response["errors"]:
+                                    if "deprecated" in err.get("error", "").lower():
+                                        continue
+                                    failed_pairs.append(f"{err['pair']} on {connector}: {err['error']}")
+                    except Exception:
+                        failed_pairs.append(f"Failed to fetch volume for {connector}")
 
             if volume_records:
                 volume_df = pd.DataFrame(volume_records)
@@ -73,37 +81,98 @@ if get_data_button:
             else:
                 volume_df = pd.DataFrame()
 
-            if spread_response and spread_response.get("data"):
-                spread_data = spread_response["data"]
-                spread_df = pd.DataFrame(spread_data)
+            vol_data_cols = ["base_volume", "last_price", "quote_volume"]
 
-                if not spread_df.empty:
-                    if not volume_df.empty:
-                        spread_df["_merge_pair"] = spread_df["pair"].astype(str).str.strip().str.upper()
-                        spread_df["_merge_connector"] = spread_df["connector"].astype(str).str.strip().str.lower()
+            def _build_vol_merge(vdf):
+                vm = vdf.copy()
+                vm["_mk"] = vm["exchange"].astype(str).str.lower() + "||" + vm["trading_pair"].astype(str).str.strip().str.upper()
+                vm.drop(columns=["exchange", "trading_pair"], inplace=True, errors="ignore")
+                return vm
 
-                        vol_merge = volume_df.copy()
-                        vol_merge["_merge_pair"] = vol_merge["trading_pair"].astype(str).str.strip().str.upper()
-                        vol_merge["_merge_connector"] = vol_merge["exchange"].astype(str).str.strip().str.lower()
-                        vol_merge.drop(columns=["exchange", "trading_pair"], inplace=True, errors="ignore")
+            if pairs_list:
+                skeleton = pd.DataFrame(
+                    [(c, p) for c in connectors for p in pairs_list],
+                    columns=["connector", "pair"]
+                )
+                skeleton["_mk"] = skeleton["connector"].str.lower() + "||" + skeleton["pair"].str.strip().str.upper()
 
-                        spread_df = spread_df.merge(
-                            vol_merge,
-                            on=["_merge_connector", "_merge_pair"],
-                            how="left"
+                spread_rows = pd.DataFrame(spread_response.get("data", []) if spread_response else [])
+                if not spread_rows.empty:
+                    spread_rows["_mk"] = (
+                        spread_rows["connector"].astype(str).str.lower()
+                        + "||"
+                        + spread_rows["pair"].astype(str).str.strip().str.upper()
+                    )
+                    spread_df = skeleton.merge(
+                        spread_rows.drop(columns=["connector", "pair"], errors="ignore"),
+                        on="_mk", how="left"
+                    )
+                else:
+                    spread_df = skeleton.copy()
+                spread_df.drop(columns=["_mk"], inplace=True, errors="ignore")
+
+                if not volume_df.empty:
+                    vm = _build_vol_merge(volume_df)
+                    spread_df["_mk"] = spread_df["connector"].str.lower() + "||" + spread_df["pair"].str.strip().str.upper()
+                    spread_df = spread_df.merge(vm, on="_mk", how="left")
+                    spread_df.drop(columns=["_mk"], inplace=True, errors="ignore")
+
+                identity_cols = {"connector", "pair", "sample_count"}
+                spread_data_cols = [c for c in spread_df.columns if c not in identity_cols and c not in vol_data_cols]
+                rows_to_keep = []
+                for idx, row in spread_df.iterrows():
+                    spread_missing = not spread_data_cols or all(pd.isna(row.get(c)) for c in spread_data_cols)
+                    vol_missing = all(pd.isna(row.get(c)) for c in vol_data_cols if c in spread_df.columns)
+                    if spread_missing and vol_missing:
+                        already_logged = any(
+                            row["pair"] in fp and row["connector"] in fp
+                            for fp in failed_pairs
                         )
-                        spread_df.drop(columns=["_merge_connector", "_merge_pair"], inplace=True, errors="ignore")
+                        if not already_logged:
+                            failed_pairs.append(f"No spread or volume data found for {row['pair']} on {row['connector']}")
+                    else:
+                        rows_to_keep.append(idx)
+                spread_df = spread_df.loc[rows_to_keep].reset_index(drop=True)
 
-                    st.session_state["download_spread__spread_df"] = spread_df
-                    st.session_state["download_spread__volume_df"] = volume_df
-                    st.session_state["download_spread__failed_pairs"] = failed_pairs
-                    st.session_state["download_spread__pairs_list"] = pairs_list
-                    st.session_state["download_spread__connectors"] = connectors
-                    st.session_state["download_spread__window_hours"] = window_hours
+                spread_df = spread_df.fillna("-")
+                if "quote_volume" in spread_df.columns:
+                    spread_df["quote_volume"] = spread_df["quote_volume"].replace(0, "-")
+
+                st.session_state["download_spread__spread_df"] = spread_df
+                st.session_state["download_spread__volume_df"] = volume_df
+                st.session_state["download_spread__failed_pairs"] = failed_pairs
+                st.session_state["download_spread__pairs_list"] = pairs_list
+                st.session_state["download_spread__connectors"] = connectors
+                st.session_state["download_spread__window_hours"] = window_hours
+
+            else:
+                if spread_response and spread_response.get("data"):
+                    spread_df = pd.DataFrame(spread_response["data"])
+
+                    if not spread_df.empty:
+                        if not volume_df.empty:
+                            vm = _build_vol_merge(volume_df)
+                            spread_df["_mk"] = (
+                                spread_df["connector"].astype(str).str.lower()
+                                + "||"
+                                + spread_df["pair"].astype(str).str.strip().str.upper()
+                            )
+                            spread_df = spread_df.merge(vm, on="_mk", how="left")
+                            spread_df.drop(columns=["_mk"], inplace=True, errors="ignore")
+                            spread_df = spread_df.fillna("-")
+                            if "quote_volume" in spread_df.columns:
+                                spread_df["quote_volume"] = spread_df["quote_volume"].replace(0, "-")
+
+                        st.session_state["download_spread__spread_df"] = spread_df
+                        st.session_state["download_spread__volume_df"] = volume_df
+                        st.session_state["download_spread__failed_pairs"] = failed_pairs
+                        st.session_state["download_spread__pairs_list"] = pairs_list
+                        st.session_state["download_spread__connectors"] = connectors
+                        st.session_state["download_spread__window_hours"] = window_hours
+                    else:
+                        st.warning("No spread data available for the selected parameters.")
                 else:
                     st.warning("No spread data available for the selected parameters.")
-            else:
-                st.warning("No spread data available for the selected parameters.")
 
         except Exception as e:
             st.error(f"Failed to fetch spread data: {str(e)}")
