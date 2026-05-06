@@ -78,6 +78,7 @@ if get_data_button:
             if volume_records:
                 volume_df = pd.DataFrame(volume_records)
                 volume_df["quote_volume"] = volume_df["quote_volume"].replace(0, "-")
+                volume_df = volume_df.drop_duplicates(subset=["exchange", "trading_pair"])
             else:
                 volume_df = pd.DataFrame()
 
