@@ -6,6 +6,23 @@ import streamlit as st
 
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
+SUPPORTED_EXCHANGES = [
+    "binance",
+    "coinbase",
+    "kraken",
+    "kucoin",
+    "bybit",
+    "okx",
+    "gate_io",
+    "huobi",
+    "coindcx",
+    "wazirx",
+    "coinswitch",
+    "zebpay",
+    "coinex",
+    "valr",
+]
+
 # Initialize Streamlit page
 initialize_st_page(title="Download Spread", icon="📊")
 backend_api_client = get_backend_api_client()
@@ -13,7 +30,7 @@ c1, c2, c3 = st.columns([2, 2, 0.5])
 with c1:
     connectors = st.multiselect(
         "Exchanges",
-        options=["binance", "coinbase", "kraken", "kucoin", "bybit", "okx", "gate_io", "huobi", "coindcx", "wazirx"],
+        options=SUPPORTED_EXCHANGES,
         default=["coindcx"]
     )
     trading_pairs = st.text_input("Trading Pairs", value="BTC-USDT")
@@ -229,7 +246,8 @@ if "download_spread__spread_df" in st.session_state:
                     samples_df = pd.DataFrame(samples_response["data"])
                     if "timestamp" in samples_df.columns:
                         local_tz = datetime.datetime.now().astimezone().tzinfo
-                        samples_df["timestamp"] = pd.to_datetime(samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
+                        samples_df["timestamp"] = pd.to_datetime(
+                            samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
                     st.dataframe(samples_df, use_container_width=True)
                     st.caption(f"{samples_response.get('count', len(samples_df))} samples retrieved")
                     samples_csv = samples_df.to_csv(index=False)
