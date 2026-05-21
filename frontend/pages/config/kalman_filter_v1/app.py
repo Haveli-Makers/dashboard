@@ -7,16 +7,15 @@ from hummingbot.connector.connector_base import OrderType
 from plotly.subplots import make_subplots
 from pykalman import KalmanFilter
 
-from CONFIG import BACKEND_API_HOST, BACKEND_API_PORT
-from frontend.st_utils import initialize_st_page
+from frontend.st_utils import get_selected_server_config, initialize_st_page
 
 # Initialize the Streamlit page
 initialize_st_page(title="Kalman Filter V1", icon="📈", initial_sidebar_state="expanded")
 
 
 @st.cache_data
-def get_candles(connector_name="binance", trading_pair="BTC-USDT", interval="1m", max_records=5000):
-    backend_client = BackendAPIClient(BACKEND_API_HOST, BACKEND_API_PORT)
+def get_candles(host, port, connector_name="binance", trading_pair="BTC-USDT", interval="1m", max_records=5000):
+    backend_client = BackendAPIClient(host, port)
     return backend_client.get_real_time_candles(connector_name, trading_pair, interval, max_records)
 
 
@@ -89,7 +88,9 @@ with c2:
     transition_covariance = st.number_input("Transition Covariance", value=0.001, step=0.0001, format="%.4f")
 
 # Load candle data
-candle_data = get_candles(connector_name=candles_connector, trading_pair=candles_trading_pair, interval=interval,
+_server = get_selected_server_config()
+candle_data = get_candles(_server['host'], _server['port'],
+                          connector_name=candles_connector, trading_pair=candles_trading_pair, interval=interval,
                           max_records=max_records)
 df = pd.DataFrame(candle_data)
 df.index = pd.to_datetime(df['timestamp'], unit='s')

@@ -7,7 +7,7 @@ from hummingbot.core.data_type.common import TradeType
 
 from backend.services.backend_api_client import BackendAPIClient
 from backend.utils.performance_data_source import PerformanceDataSource
-from frontend.st_utils import download_csv_button, get_backend_api_client
+from frontend.st_utils import download_csv_button, get_backend_api_client, get_selected_server_config
 from frontend.visualization.backtesting import create_backtesting_figure
 from frontend.visualization.backtesting_metrics import render_accuracy_metrics, render_backtesting_metrics
 from frontend.visualization.performance_time_evolution import create_combined_subplots
@@ -221,7 +221,8 @@ def display_execution_analysis(data_source: PerformanceDataSource):
                 st.json(config)
             with col2:
                 st.markdown("### ➡️ Share")
-                host = st.text_input("Host", "localhost")
+                _server = get_selected_server_config()
+                host = st.text_input("Host", _server.get('host', 'localhost'))
                 if st.button("Upload to Backend API"):
                     try:
                         backend_api_client = BackendAPIClient(host=host)

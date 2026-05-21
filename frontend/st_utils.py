@@ -126,6 +126,11 @@ def _get_selected_server() -> dict:
     return servers[0] if servers else {}
 
 
+def get_selected_server_config() -> dict:
+    """Public helper: returns host, port, username, password for the active server."""
+    return _get_selected_server()
+
+
 def get_backend_api_client():
     import atexit
 
