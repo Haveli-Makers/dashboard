@@ -1,23 +1,24 @@
-import streamlit as st
 import nest_asyncio
+import streamlit as st
 
 from frontend.st_utils import get_backend_api_client
 
 nest_asyncio.apply()
 
+
 def render_save_config(config_base_default: str, config_data: dict):
-    st.write("### Upload Config to Hummingbot-API")
+    st.write("### Upload Config")
     backend_api_client = get_backend_api_client()
     try:
         all_configs = backend_api_client.controllers.list_controller_configs()
     except Exception as e:
         st.error(f"Failed to fetch controller configs: {e}")
         return
-    
+
     # Check if we're editing an existing config
     existing_config_id = config_data.get("id", "")
     is_existing_config = bool(existing_config_id and any(config.get("id") == existing_config_id for config in all_configs))
-    
+
     if is_existing_config:
         # For existing configs, preserve the original ID
         config_base = existing_config_id.split("_")[0] if "_" in existing_config_id else existing_config_id
@@ -54,7 +55,14 @@ def render_save_config(config_base_default: str, config_data: dict):
         config_tag = st.text_input("Config Tag", value=config_tag)
     with c3:
         upload_config_to_backend = st.button("Upload")
+
+    config_base_has_underscore = "_" in config_base
+    if config_base_has_underscore:
+        st.error("Config Base cannot contain '_'.")
+
     if upload_config_to_backend:
+        if config_base_has_underscore:
+            return
         config_name = f"{config_base}_{config_tag}"
         config_data["id"] = config_name
         try:

@@ -10,6 +10,8 @@ initialize_st_page(icon="🙌", show_readme=False)
 # Initialize backend client
 backend_api_client = get_backend_api_client()
 
+DRAWDOWN_QUOTE_OPTIONS = ["INR", "USDT"]
+
 
 def get_controller_configs():
     """Get all controller configurations using the new API."""
@@ -22,17 +24,17 @@ def get_controller_configs():
 
 def filter_hummingbot_images(images):
     """Filter images to only show Havelimakers-related ones."""
-    havelimakers_images = []
-    # pattern = r'.+/havelimakers:'
+    from CONFIG import IMAGE_FILTER_KEYWORD
+    filtered_images = []
 
     for image in images:
         try:
-            if image.startswith("havelimakers:"):
-                havelimakers_images.append(image)
+            if image.startswith(f'{IMAGE_FILTER_KEYWORD}:'):
+                filtered_images.append(image)
         except Exception:
             continue
 
-    return havelimakers_images
+    return filtered_images
 
 
 def launch_new_bot(bot_name, image_name, credentials, selected_controllers, max_global_drawdown,
@@ -62,38 +64,20 @@ def launch_new_bot(bot_name, image_name, credentials, selected_controllers, max_
             "image": image_name,
         }
 
-        # Add optional drawdown parameters if set
+        # Add optional drawdown parameters if set.
+        # These fields already represent amounts in the selected quote asset.
         if max_global_drawdown is not None and max_global_drawdown > 0:
             deploy_config["max_global_drawdown_quote"] = max_global_drawdown
         if max_controller_drawdown is not None and max_controller_drawdown > 0:
             deploy_config["max_controller_drawdown_quote"] = max_controller_drawdown
 
         backend_api_client.bot_orchestration.deploy_v2_controllers(**deploy_config)
-        st.success(f"Successfully deployed bot: {full_bot_name}")
+        st.success(f"Successfully deployed bot: {full_bot_name} with drawdown limits in {drawdown_quote}")
         time.sleep(3)
         return True
 
     except Exception as e:
         st.error(f"Failed to deploy bot: {e}")
-        return False
-
-
-def delete_selected_configs(selected_controllers):
-    """Delete selected controller configurations."""
-    if selected_controllers:
-        try:
-            for config in selected_controllers:
-                # Remove .yml extension if present
-                config_name = config.replace(".yml", "")
-                backend_api_client.controllers.delete_controller_config(config_name)
-                st.success(f"Deleted {config_name}")
-            return True
-
-        except Exception as e:
-            st.error(f"Failed to delete configs: {e}")
-            return False
-    else:
-        st.warning("You need to select the controllers configs that you want to delete.")
         return False
 
 
@@ -134,17 +118,8 @@ with st.container(border=True):
 
     with col3:
         try:
-            all_images = backend_api_client.docker.get_available_images("havelimakers")
+            all_images = backend_api_client.docker.get_available_images("")
             available_images = filter_hummingbot_images(all_images)
-
-            if not available_images:
-                # Fallback to default if no hummingbot images found
-                available_images = ["hummingbot/hummingbot:latest"]
-
-            # Ensure default image is in the list
-            default_image = "havelimakers:latest"
-            if default_image not in available_images:
-                available_images.insert(0, default_image)
 
             image_name = st.selectbox(
                 "Bot Image",
@@ -152,7 +127,11 @@ with st.container(border=True):
                 index=0,
                 key="image_select"
             )
-            st.write(f"Selected Image: {image_name}")
+
+            if not available_images:
+                st.error("No images available")
+            else:
+                st.write(f"Selected Image: {image_name}")
         except Exception as e:
             st.error(f"Failed to fetch available images: {e}")
             image_name = st.text_input(
@@ -163,29 +142,39 @@ with st.container(border=True):
 
 # Risk Management Section
 with st.container(border=True):
-    st.warning("⚠️ **Risk Management:** Set maximum drawdown limits in USDT to protect your capital")
+    st.warning("⚠️ **Risk Management:** Choose the quote asset and set maximum drawdown limits in that "
+               "quote to protect your capital")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([1, 3, 3])
 
     with col1:
-        max_global_drawdown = st.number_input(
-            "Max Global Drawdown (USDT)",
-            min_value=0.0,
-            value=0.0,
-            step=100.0,
-            format="%.2f",
-            help="Maximum allowed drawdown across all controllers",
-            key="global_drawdown_input"
+        drawdown_quote = st.selectbox(
+            "Drawdown Quote",
+            options=DRAWDOWN_QUOTE_OPTIONS,
+            index=DRAWDOWN_QUOTE_OPTIONS.index("INR"),
+            help="Choose the quote asset used for the drawdown limits",
+            key="drawdown_quote_select"
         )
 
     with col2:
-        max_controller_drawdown = st.number_input(
-            "Max Controller Drawdown (USDT)",
+        max_global_drawdown = st.number_input(
+            f"Max Global Drawdown ({drawdown_quote})",
             min_value=0.0,
             value=0.0,
             step=100.0,
             format="%.2f",
-            help="Maximum allowed drawdown per controller",
+            help=f"Maximum allowed drawdown across all controllers in {drawdown_quote}",
+            key="global_drawdown_input"
+        )
+
+    with col3:
+        max_controller_drawdown = st.number_input(
+            f"Max Controller Drawdown ({drawdown_quote})",
+            min_value=0.0,
+            value=0.0,
+            step=100.0,
+            format="%.2f",
+            help=f"Maximum allowed drawdown per controller in {drawdown_quote}",
             key="controller_drawdown_input"
         )
 
@@ -238,7 +227,7 @@ with st.container(border=True):
             "Controller Type": controller_type,
             "Connector": connector_name,
             "Trading Pair": trading_pair,
-            "Amount (USDT)": f"${total_amount_quote:,.2f}",
+            "Amount ": f"{total_amount_quote:,.2f}",
             "_config_name": config_name  # Hidden column for reference
         })
 
@@ -253,7 +242,7 @@ with st.container(border=True):
             column_config={
                 "Select": st.column_config.CheckboxColumn(
                     "Select",
-                    help="Select controllers to deploy or delete",
+                    help="Select controllers to deploy",
                     default=False,
                 ),
                 "_config_name": None,  # Hide this column
@@ -277,27 +266,16 @@ with st.container(border=True):
 
         # Display action buttons
         st.divider()
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button("🗑️ Delete Selected", type="secondary", use_container_width=True):
-                if selected_controllers:
-                    if delete_selected_configs(selected_controllers):
+        deploy_button_style = "primary" if selected_controllers else "secondary"
+        if st.button("🚀 Deploy Bot", type=deploy_button_style, use_container_width=True):
+            if selected_controllers:
+                with st.spinner('🚀 Starting Bot... This process may take a few seconds'):
+                    st.info(f"🚀 Launching new bot with name: {bot_name}, image: {image_name}")
+                    if launch_new_bot(bot_name, image_name, credentials, selected_controllers,
+                                      max_global_drawdown, max_controller_drawdown):
                         st.rerun()
-                else:
-                    st.warning("Please select at least one controller to delete")
-
-        with col2:
-            deploy_button_style = "primary" if selected_controllers else "secondary"
-            if st.button("🚀 Deploy Bot", type=deploy_button_style, use_container_width=True):
-                if selected_controllers:
-                    with st.spinner('🚀 Starting Bot... This process may take a few seconds'):
-                        st.info(f"🚀 Launching new bot with name: {bot_name}, image: {image_name}")
-                        if launch_new_bot(bot_name, image_name, credentials, selected_controllers,
-                                          max_global_drawdown, max_controller_drawdown):
-                            st.rerun()
-                else:
-                    st.warning("Please select at least one controller to deploy")
+            else:
+                st.warning("Please select at least one controller to deploy")
 
     else:
         st.warning("⚠️ No controller configurations available. Please create some configurations first.")
