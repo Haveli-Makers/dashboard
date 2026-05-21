@@ -105,6 +105,7 @@ def render_server_selector():
                 pass
             st.session_state.backend_api_client = None
         st.session_state.selected_server_name = st.session_state._server_selector
+        st.cache_data.clear()
 
     st.sidebar.selectbox(
         "Server",
