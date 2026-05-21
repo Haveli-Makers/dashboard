@@ -70,26 +70,87 @@ def style_metric_cards():
     pass
 
 
+def load_servers() -> list[dict]:
+    """Load server configurations from servers.yml."""
+    servers_path = Path('servers.yml')
+    if not servers_path.exists():
+        from CONFIG import BACKEND_API_HOST, BACKEND_API_PASSWORD, BACKEND_API_PORT, BACKEND_API_USERNAME
+        return [{
+            'name': 'Local',
+            'host': BACKEND_API_HOST,
+            'port': int(BACKEND_API_PORT),
+            'username': BACKEND_API_USERNAME,
+            'password': BACKEND_API_PASSWORD,
+        }]
+    with open(servers_path) as f:
+        data = yaml.load(f, Loader=SafeLoader)
+    return data.get('servers', [])
+
+
+def render_server_selector():
+    """Render a server selector dropdown in the sidebar."""
+    servers = load_servers()
+    if not servers:
+        return
+    server_names = [s['name'] for s in servers]
+    if 'selected_server_name' not in st.session_state:
+        st.session_state.selected_server_name = server_names[0]
+
+    def _on_server_change():
+        if 'backend_api_client' in st.session_state:
+            try:
+                if st.session_state.backend_api_client is not None:
+                    st.session_state.backend_api_client.__exit__(None, None, None)
+            except Exception:
+                pass
+            st.session_state.backend_api_client = None
+        st.session_state.selected_server_name = st.session_state._server_selector
+
+    st.sidebar.selectbox(
+        "Server",
+        options=server_names,
+        index=server_names.index(st.session_state.selected_server_name)
+              if st.session_state.selected_server_name in server_names else 0,
+        key='_server_selector',
+        on_change=_on_server_change,
+    )
+
+
+def _get_selected_server() -> dict:
+    """Return the server config dict for the currently selected server."""
+    servers = load_servers()
+    selected_name = st.session_state.get('selected_server_name')
+    for s in servers:
+        if s['name'] == selected_name:
+            return s
+    return servers[0] if servers else {}
+
+
 def get_backend_api_client():
     import atexit
 
     from api_client.sync_client import SyncHummingbotAPIClient
-    from CONFIG import BACKEND_API_HOST, BACKEND_API_PASSWORD, BACKEND_API_PORT, BACKEND_API_USERNAME
+
+    server = _get_selected_server()
+    host = server.get('host', '127.0.0.1')
+    port = server.get('port', 8000)
+    username = server.get('username', 'admin')
+    password = server.get('password', 'admin')
 
     # Use Streamlit session state to store singleton instance
     if 'backend_api_client' not in st.session_state or st.session_state.backend_api_client is None:
         try:
             # Create and enter the client context
             # Ensure URL has proper protocol
-            if not BACKEND_API_HOST.startswith(('http://', 'https://')):
-                base_url = f"http://{BACKEND_API_HOST}:{BACKEND_API_PORT}"
+            if not str(host).startswith(('http://', 'https://')):
+                base_url = f"http://{host}:{port}"
             else:
-                base_url = f"{BACKEND_API_HOST}:{BACKEND_API_PORT}"
+                base_url = f"{host}:{port}"
 
             client = SyncHummingbotAPIClient(
                 base_url=base_url,
-                username=BACKEND_API_USERNAME,
-                password=BACKEND_API_PASSWORD
+                username=username,
+                password=password
             )
             # Initialize the client using context manager
             client.__enter__()
@@ -125,6 +186,7 @@ def get_backend_api_client():
 
 
 def auth_system():
+    render_server_selector()
     if not AUTH_SYSTEM_ENABLED:
         return {
             "Main": main_page(),
