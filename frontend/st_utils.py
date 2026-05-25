@@ -70,6 +70,13 @@ def style_metric_cards():
     pass
 
 
+def _close_backend_api_client(client) -> None:
+    try:
+        client.__exit__(None, None, None)
+    except Exception:
+        pass
+
+
 def get_backend_api_client():
     import atexit
 
@@ -96,15 +103,12 @@ def get_backend_api_client():
 
             # Register cleanup function to properly exit the context manager
             def cleanup_client():
-                try:
-                    if 'backend_api_client' in st.session_state and st.session_state.backend_api_client is not None:
-                        st.session_state.backend_api_client.__exit__(None, None, None)
-                        st.session_state.backend_api_client = None
-                except Exception:
-                    pass  # Ignore cleanup errors
+                _close_backend_api_client(client)
+                if st.session_state.get('backend_api_client') is client:
+                    st.session_state.backend_api_client = None
 
             # Register cleanup with atexit and session state
-            atexit.register(cleanup_client)
+            atexit.register(_close_backend_api_client, client)
             if 'cleanup_registered' not in st.session_state:
                 st.session_state.cleanup_registered = True
                 # Also register cleanup for session state changes
