@@ -1,0 +1,11 @@
+servers:
+  - name: "Local"
+    host: "127.0.0.1"
+    port: 8000
+    username: "admin"
+    password: "admin"
+  - name: "Production"
+    host: "YOUR_SERVER_IP"
+    port: 8000
+    username: "YOUR_USERNAME"
+    password: "YOUR_PASSWORD"

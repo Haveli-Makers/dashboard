@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 import streamlit as st
 from hummingbot.core.data_type.common import TradeType
 
-from backend.services.backend_api_client import BackendAPIClient
 from backend.utils.performance_data_source import PerformanceDataSource
 from frontend.st_utils import download_csv_button, get_backend_api_client
 from frontend.visualization.backtesting import create_backtesting_figure
@@ -221,10 +220,9 @@ def display_execution_analysis(data_source: PerformanceDataSource):
                 st.json(config)
             with col2:
                 st.markdown("### ➡️ Share")
-                host = st.text_input("Host", "localhost")
                 if st.button("Upload to Backend API"):
                     try:
-                        backend_api_client = BackendAPIClient(host=host)
+                        backend_api_client = get_backend_api_client()
                         config_name = controller_id
                         backend_api_client.controllers.create_or_update_controller_config(
                             config_name=config_name,
