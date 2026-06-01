@@ -86,10 +86,13 @@ def get_candles_connectors():
         return []
 
 
-def get_positions():
+def get_positions(account_name=None):
     """Get current positions."""
     try:
-        response = backend_api_client.trading.get_positions(limit=100)
+        kwargs = {"limit": 100}
+        if account_name:
+            kwargs["account_names"] = [account_name]
+        response = backend_api_client.trading.get_positions(**kwargs)
         # Handle both response formats
         if isinstance(response, list):
             return response
@@ -104,10 +107,13 @@ def get_positions():
         return []
 
 
-def get_active_orders():
+def get_active_orders(account_name=None):
     """Get active orders."""
     try:
-        response = backend_api_client.trading.get_active_orders(limit=100)
+        kwargs = {"limit": 100}
+        if account_name:
+            kwargs["account_names"] = [account_name]
+        response = backend_api_client.trading.get_active_orders(**kwargs)
         # Handle both response formats
         if isinstance(response, list):
             return response
@@ -124,11 +130,14 @@ def get_active_orders():
         return []
 
 
-def get_order_history():
+def get_order_history(account_name=None):
     """Get recent order history."""
     try:
         # Try to get orders instead of order_history since that method doesn't exist
-        response = backend_api_client.trading.search_orders(limit=50)
+        kwargs = {"limit": 50}
+        if account_name:
+            kwargs["account_names"] = [account_name]
+        response = backend_api_client.trading.search_orders(**kwargs)
         # Handle both response formats
         if isinstance(response, list):
             return response
@@ -1461,10 +1470,11 @@ def show_trading_data():
     # Data tables section
     st.divider()
 
-    # Get positions, orders, and history
-    positions = get_positions()
-    orders = get_active_orders()
-    order_history = get_order_history()
+    # Get positions, orders, and history filtered by selected account
+    selected_account = st.session_state.selected_account
+    positions = get_positions(account_name=selected_account)
+    orders = get_active_orders(account_name=selected_account)
+    order_history = get_order_history(account_name=selected_account)
 
     # Display in tabs - Balances first
     tab1, tab2, tab3, tab4 = st.tabs(["💰 Balances", "📊 Positions", "📋 Active Orders", "📜 Order History"])
