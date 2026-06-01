@@ -1070,78 +1070,6 @@ else:
     st.info("Select account and pair to view extended market data")
 
 
-@st.dialog("📈 Price Chart", width="large")
-def show_price_chart_dialog():
-    connector = st.session_state.selected_market.get("connector")
-    trading_pair = st.session_state.selected_market.get("trading_pair")
-    if not connector or not trading_pair:
-        st.warning("Please select an account and trading pair")
-        return
-
-    controls_col1, controls_col2, controls_col3 = st.columns(3)
-    intervals = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"]
-
-    with controls_col1:
-        current_interval = st.session_state.chart_interval
-        interval_idx = intervals.index(current_interval) if current_interval in intervals else 0
-        interval = st.selectbox(
-            "⏱️ Interval",
-            intervals,
-            index=interval_idx,
-            key="chart_dialog_interval"
-        )
-        st.session_state.chart_interval = interval
-
-    with controls_col2:
-        candles_connectors = get_candles_connectors()
-        candles_options = ["Same as trading"] + candles_connectors
-        current_cc = st.session_state.candles_connector
-        default_idx = 0 if current_cc is None else (
-            candles_connectors.index(current_cc) + 1 if current_cc in candles_connectors else 0
-        )
-        selected_candles = st.selectbox(
-            "📊 Candles Source",
-            candles_options,
-            index=default_idx,
-            key="chart_dialog_candles_connector",
-            help="Some exchanges don't provide candles. Select an alternative source."
-        )
-        st.session_state.candles_connector = None if selected_candles == "Same as trading" else selected_candles
-
-    with controls_col3:
-        max_candles = st.number_input(
-            "📈 Max Candles",
-            min_value=50,
-            max_value=500,
-            value=st.session_state.max_candles,
-            step=50,
-            key="chart_dialog_max_candles"
-        )
-        st.session_state.max_candles = max_candles
-
-    with st.spinner(f"Loading {st.session_state.chart_interval} candles for {trading_pair}…"):
-        candles, _ = get_market_data(
-            connector, trading_pair,
-            st.session_state.chart_interval,
-            st.session_state.max_candles,
-            st.session_state.candles_connector
-        )
-
-    trades = []
-    if st.session_state.selected_account and st.session_state.selected_connector:
-        trades = get_trade_history(
-            st.session_state.selected_account,
-            st.session_state.selected_connector,
-            trading_pair
-        )
-
-    candles_source = st.session_state.candles_connector if st.session_state.candles_connector else connector
-    fig = create_candlestick_chart(candles, candles_source, trading_pair, st.session_state.chart_interval, trades)
-    st.plotly_chart(fig, width="stretch")
-    current_time = datetime.datetime.now().strftime("%H:%M:%S")
-    st.caption(f"🔄 Last updated: {current_time} · {len(candles)} candles")
-
-
 def render_coindcx_orderbook(order_book, current_price, trading_pair):
     """Render a CoinDCX-style order book."""
     base_token, quote_token = trading_pair.split('-') if '-' in trading_pair else (trading_pair, "")
@@ -1444,18 +1372,13 @@ def show_trading_data():
         if bids_fb and asks_fb:
             current_price = (float(bids_fb[0]["price"]) + float(asks_fb[0]["price"])) / 2
 
-    btn_col, filter_col = st.columns([1, 3])
-    with btn_col:
-        if st.button("📈 Price Chart", use_container_width=True):
-            show_price_chart_dialog()
-    with filter_col:
-        view = st.radio(
-            "Order Book View",
-            ["All", "Bids", "Asks"],
-            horizontal=True,
-            key="ob_view_filter",
-            label_visibility="collapsed"
-        )
+    view = st.radio(
+        "Order Book View",
+        ["All", "Bids", "Asks"],
+        horizontal=True,
+        key="ob_view_filter",
+        label_visibility="collapsed"
+    )
 
     ob_col, trade_col = st.columns([1, 1])
 
