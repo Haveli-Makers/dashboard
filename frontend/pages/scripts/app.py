@@ -168,18 +168,22 @@ def render_output(result):
         )
 
 
-def build_run_payload(prefix, scripts, config_names):
+def build_run_payload(prefix, scripts):
     strategy_name = st.selectbox("Strategy", scripts, key=f"{prefix}_strategy")
-    config_name = st.selectbox("Config", config_names, key=f"{prefix}_config")
+    config_name = st.text_input(
+        "Config name",
+        key=f"{prefix}_config",
+        placeholder="Optional, for scripts that require a config",
+    )
     account_name = st.text_input("Account", key=f"{prefix}_account", placeholder="Optional")
     verbose = st.checkbox("Verbose output", key=f"{prefix}_verbose")
-    extra_args_text = st.text_input("Extra args", key=f"{prefix}_extra_args", placeholder="Optional, space separated")
+    extra_args_text = st.text_input("Extra args", key=f"{prefix}_extra_args", placeholder="Optional arguments appended to the command")
     return {
         "strategy_name": strategy_name,
-        "config_name": config_name,
+        "config_name": config_name.strip() or None,
         "account_name": account_name or None,
         "verbose": verbose,
-        "extra_args": [arg for arg in extra_args_text.split(" ") if arg],
+        "extra_args": f" {extra_args_text}" if extra_args_text else "",
     }
 
 
@@ -214,8 +218,12 @@ def schedules_to_overview_df(schedules):
 
 
 scripts = get_scripts()
-configs = get_configs()
-config_names = get_config_names(configs)
+
+st.subheader("Available Scripts")
+if scripts:
+    st.write(", ".join(scripts))
+else:
+    st.info("No scripts are currently available from the API.")
 
 scheduled_tab, instant_tab = st.tabs(["Scheduled Workflows", "Instant Run"])
 
@@ -280,7 +288,7 @@ with scheduled_tab:
             else:
                 st.info("No stored outputs for this workflow yet.")
     else:
-        st.info("No scheduled workflows yet. Create one below once scripts and configs are available from the API.")
+        st.info("No scheduled workflows yet. Create one below.")
 
     st.divider()
     with st.expander("Create scheduled workflow"):
