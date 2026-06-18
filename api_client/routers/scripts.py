@@ -31,6 +31,10 @@ class ScriptsRouter(BaseRouter):
         """Run a strategy script immediately."""
         return await self._post("/scripts/runs/instant", json=run_request)
 
+    async def run_script(self, run_request: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a script once with an inline configuration."""
+        return await self._post("/scripts/run", json=run_request)
+
     async def create_script_schedule(self, schedule_request: Dict[str, Any]) -> Dict[str, Any]:
         """Create a recurring script schedule."""
         return await self._post("/scripts/schedules/", json=schedule_request)
