@@ -218,21 +218,51 @@ if "download_spread__spread_df" in st.session_state:
         selected_pair = row["pair"]
         selected_connector = row["connector"]
 
-        st.subheader(f"Samples — {selected_connector} / {selected_pair}")
+        col1, col2 = st.columns([8, 1])
+
+        with col1:
+            st.subheader(f"Samples — {selected_connector} / {selected_pair}")
+
+        with col2:
+            sample_count_option = st.selectbox(
+                "Number of spreads",
+                options=["10", "100", "500", "1000", "All"],
+                index=0,
+                key=f"spread_sample_count_{selected_connector}_{selected_pair}",
+                label_visibility="collapsed"
+            )
+        if sample_count_option == "All":
+            selected_sample_count = pd.to_numeric(row.get("sample_count"), errors="coerce")
+            sample_limit = int(selected_sample_count) if pd.notna(selected_sample_count) else 100000
+        else:
+            sample_limit = int(sample_count_option)
+
         with st.spinner(f"Fetching samples for {selected_pair} on {selected_connector}..."):
             try:
                 samples_response = backend_api_client.market_data.get_spread_data(
                     pair=selected_pair,
                     connector=selected_connector,
+                    limit=sample_limit,
                 )
                 if samples_response and samples_response.get("data"):
                     samples_df = pd.DataFrame(samples_response["data"])
                     if "timestamp" in samples_df.columns:
                         local_tz = datetime.datetime.now().astimezone().tzinfo
-                        samples_df["timestamp"] = pd.to_datetime(samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
-                    st.dataframe(samples_df, use_container_width=True)
-                    st.caption(f"{samples_response.get('count', len(samples_df))} samples retrieved")
-                    samples_csv = samples_df.to_csv(index=False)
+                        samples_df["timestamp"] = pd.to_datetime(
+                            samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
+                    total_samples = samples_response.get("count", len(samples_df))
+                    if sample_count_option == "All":
+                        display_samples_df = samples_df
+                    else:
+                        display_samples_df = samples_df.head(int(sample_count_option))
+
+                    st.dataframe(
+                        display_samples_df,
+                        use_container_width=True,
+                        key=f"spread_samples_table_{selected_connector}_{selected_pair}_{sample_count_option}",
+                    )
+                    st.caption(f"Showing {len(display_samples_df)} of {total_samples} samples retrieved")
+                    samples_csv = display_samples_df.to_csv(index=False)
                     st.download_button(
                         label="Download Samples as CSV",
                         data=samples_csv,
