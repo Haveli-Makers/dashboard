@@ -243,8 +243,8 @@ if "download_spread__spread_df" in st.session_state:
         with col2:
             sample_count_option = st.selectbox(
                 "Number of spreads",
-                options=["10", "100", "500", "1000", "All"],
-                index=0,
+                options=["10", "100", "200","500", "1000", "All"],
+                index=1,
                 key=f"spread_sample_count_{selected_connector}_{selected_pair}",
                 label_visibility="collapsed"
             )
