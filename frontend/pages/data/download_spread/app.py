@@ -6,6 +6,23 @@ import streamlit as st
 
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
+SUPPORTED_EXCHANGES = [
+    "binance",
+    "coinbase",
+    "kraken",
+    "kucoin",
+    "bybit",
+    "okx",
+    "gate_io",
+    "huobi",
+    "coindcx",
+    "wazirx",
+    "coinswitch",
+    "zebpay",
+    "coinex",
+    "valr",
+]
+
 # Initialize Streamlit page
 initialize_st_page(title="Download Spread", icon="📊")
 backend_api_client = get_backend_api_client()
@@ -13,7 +30,7 @@ c1, c2, c3 = st.columns([2, 2, 0.5])
 with c1:
     connectors = st.multiselect(
         "Exchanges",
-        options=["binance", "coinbase", "kraken", "kucoin", "bybit", "okx", "gate_io", "huobi", "coindcx", "wazirx"],
+        options=SUPPORTED_EXCHANGES,
         default=["coindcx"]
     )
     trading_pairs = st.text_input("Trading Pairs", value="BTC-USDT")

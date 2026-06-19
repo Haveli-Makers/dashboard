@@ -19,6 +19,8 @@ CERTIFIED_STRATEGIES = ["xemm", "cross exchange market making", "pmm", "pure mar
 
 AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "False").lower() in ("true", "1", "t")
 
+IMAGE_FILTER_KEYWORD = os.getenv("IMAGE_FILTER_KEYWORD", "haveli")
+
 BACKEND_API_HOST = os.getenv("BACKEND_API_HOST", "127.0.0.1")
 BACKEND_API_PORT = os.getenv("BACKEND_API_PORT", 8000)
 BACKEND_API_USERNAME = os.getenv("BACKEND_API_USERNAME", "admin")

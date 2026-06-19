@@ -24,6 +24,10 @@ class AccountsRouter(BaseRouter):
         """List connector names that have credentials configured for an account."""
         return await self._get(f"/accounts/{account_name}/credentials")
 
+    async def get_account_credentials_details(self, account_name: str) -> List[Dict[str, Any]]:
+        """Fetch credential details for an account, including masked parameter values."""
+        return await self._get(f"/accounts/{account_name}/credentials/details")
+
     async def add_credential(
         self,
         account_name: str,

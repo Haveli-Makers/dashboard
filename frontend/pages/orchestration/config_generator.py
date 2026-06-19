@@ -22,7 +22,7 @@ CONFIG_PAGES: Dict[str, ConfigMetadata] = {
     "MACD_BB V1": {"module": "frontend.pages.config.macd_bb_v1.app", "slug": "macd_bb_v1", "icon": "📊"},
     "SuperTrend V1": {"module": "frontend.pages.config.supertrend_v1.app", "slug": "supertrend_v1", "icon": "👨‍🔬"},
     "XEMM Controller": {"module": "frontend.pages.config.xemm_controller.app", "slug": "xemm_controller", "icon": "⚡️"},
-    "Spreadkiller V1": {"module": "frontend.pages.config.spreadkiller_v1.app", "slug": "spreadkiller_v1", "icon": "🦈"},
+    "Spreadkiller": {"module": "frontend.pages.config.spreadkiller.app", "slug": "spreadkiller", "icon": "🦈"},
 }
 
 DEFAULT_CONFIG_NAME = "Grid Strike"
