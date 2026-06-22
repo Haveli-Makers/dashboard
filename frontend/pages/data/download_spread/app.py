@@ -35,9 +35,8 @@ with c1:
     )
     trading_pairs = st.text_input("Trading Pairs", value="BTC-USDT")
 with c2:
-    window_hours = st.selectbox("Time Window (Hours)",
-                                options=[1, 6, 12, 24, 48, 72, 168],  # 1h, 6h, 12h, 24h, 48h, 72h, 1 week
-                                index=3)  # Default to 24 hours
+    st.text_input("Time Window (Hours)", value="24", disabled=True)
+    window_hours = 24
 with c3:
     get_data_button = st.button("Get Spread!")
 
@@ -243,16 +242,18 @@ if "download_spread__spread_df" in st.session_state:
         with col2:
             sample_count_option = st.selectbox(
                 "Number of spreads",
-                options=["10", "100", "500", "1000", "All"],
-                index=0,
+                options=["24 hrs (All)", "10", "100", "200", "500", "1000"],
+                index=0,  # Default to 24 hrs
                 key=f"spread_sample_count_{selected_connector}_{selected_pair}",
                 label_visibility="collapsed"
             )
-        if sample_count_option == "All":
+
+        if sample_count_option == "24 hrs (All)":
             selected_sample_count = pd.to_numeric(row.get("sample_count"), errors="coerce")
             sample_limit = int(selected_sample_count) if pd.notna(selected_sample_count) else 100000
         else:
             sample_limit = int(sample_count_option)
+
 
         with st.spinner(f"Fetching samples for {selected_pair} on {selected_connector}..."):
             try:
@@ -268,7 +269,7 @@ if "download_spread__spread_df" in st.session_state:
                         samples_df["timestamp"] = pd.to_datetime(
                             samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
                     total_samples = samples_response.get("count", len(samples_df))
-                    if sample_count_option == "All":
+                    if sample_count_option == "24 hrs (All)":
                         display_samples_df = samples_df
                     else:
                         display_samples_df = samples_df.head(int(sample_count_option))
