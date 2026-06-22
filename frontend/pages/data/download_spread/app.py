@@ -262,4 +262,3 @@ if "download_spread__spread_df" in st.session_state:
                     st.info("No raw samples found for this trading pair.")
             except Exception as samples_err:
                 st.error(f"Failed to fetch samples: {str(samples_err)}")
-                
