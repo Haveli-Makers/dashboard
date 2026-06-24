@@ -450,3 +450,4 @@ class MarketDataRouter(BaseRouter):
             data = await client.market_data.get_spread_data(pair="BTC-USDT", connector="binance")
         """
         return await self._get(f"/market-data/spread-data/{connector}/{pair}")
+
