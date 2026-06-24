@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .base import BaseRouter
 
@@ -32,12 +32,15 @@ class AccountsRouter(BaseRouter):
         self,
         account_name: str,
         connector_name: str,
-        credentials: Dict[str, Any]
+        credentials: Dict[str, Any],
+        alias: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add or update connector credentials for an account."""
+        params = {"alias": alias} if alias else None
         return await self._post(
             f"/accounts/add-credential/{account_name}/{connector_name}",
-            json=credentials
+            json=credentials,
+            params=params,
         )
 
     async def delete_credential(self, account_name: str, connector_name: str) -> Dict[str, Any]:

@@ -30,10 +30,12 @@ def get_all_connectors_config_map():
 
 def render_credential_row(account_name: str, credential_details: dict[str, Any]):
     connector_name = credential_details.get("connector_name", "")
+    credential_type = credential_details.get("credential_type", "Master") 
+    alias = credential_details.get("alias") 
     parameters = credential_details.get("parameters") or {}
     parameter_items = list(parameters.items())
 
-    columns_spec = [2, *([3] * max(len(parameter_items), 1)), 1]
+    columns_spec = [2, *([3] * max(len(parameter_items), 1)), 2, 1]
 
     with st.container(border=True):
         cols = st.columns(columns_spec, vertical_alignment="bottom")
@@ -64,6 +66,15 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
                     key=f"{account_name}_{connector_name}_parameters",
                 )
 
+        with cols[-2]:
+            type_display = f"{credential_type}"
+            st.text_input(
+                "Type",
+                value=type_display,
+                disabled=True,
+                key=f"{account_name}_{connector_name}_type",
+            )
+
         with cols[-1]:
             st.write("")
             if st.button("🗑️", key=f"delete_credential_{account_name}_{connector_name}"):
@@ -92,6 +103,21 @@ def add_credentials_section():
         connector_name = st.selectbox("Select Connector", options=all_connectors, index=coindcx_index)
         config_map = all_connector_config_map.get(connector_name, [])
 
+    credential_type = st.radio(
+        "Credential Type",
+        ["Master", "Sub-account"],
+        horizontal=True,
+        key=f"{connector_name}_credential_type",
+    )
+    alias = None
+    if credential_type == "Sub-account":
+        alias = st.text_input(
+            "Alias",
+            placeholder=f"{connector_name}_sub_1",
+            help="Custom storage name for this sub-account credential (e.g. 'binance_sub_1234'). Must be unique per connector.",
+            key=f"{connector_name}_alias",
+        )
+
     st.write(f"Provide details for {connector_name}:")
     config_inputs = {}
 
@@ -102,11 +128,14 @@ def add_credentials_section():
 
     with cols[-1]:
         if st.button("Submit Credentials"):
-            if account_name not in accounts:  # type: ignore
-                client.accounts.add_account(account_name)
-            response = client.accounts.add_credential(account_name, connector_name, config_inputs)
-            st.write(response)
-            st.rerun()
+            if credential_type == "Sub-account" and not alias:
+                st.error("Please provide an alias for the sub-account credential.")
+            else:
+                if account_name not in accounts:  # type: ignore
+                    client.accounts.add_account(account_name)
+                response = client.accounts.add_credential(account_name, connector_name, config_inputs, alias=alias)
+                st.write(response)
+                st.rerun()
 
 
 add_credentials_section()
