@@ -260,6 +260,7 @@ if "download_spread__spread_df" in st.session_state:
                 samples_response = backend_api_client.market_data.get_spread_data(
                     pair=selected_pair,
                     connector=selected_connector,
+                    limit=sample_limit
                 )
                 if samples_response and samples_response.get("data"):
                     samples_df = pd.DataFrame(samples_response["data"])
