@@ -1,4 +1,5 @@
 - ccxt
+- cryptography
 - streamlit>=1.36.0
 - watchdog
 - plotly
