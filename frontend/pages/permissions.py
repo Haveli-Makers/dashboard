@@ -29,30 +29,12 @@ def public_pages():
 
 def private_pages():
     return {
-        "Bot Orchestration": [
-            st.Page(
-                "frontend/pages/orchestration/config_generator.py",
-                title="Config Generator",
-                icon="🧩",
-                url_path="config_generator"
-            ),
-            st.Page(
-                "frontend/pages/orchestration/instances/app.py",
-                title="Instances",
-                icon="🦅",
-                url_path="instances"
-            ),
-            st.Page(
-                "frontend/pages/orchestration/launch_bot_v2/app.py",
-                title="Deploy V2",
-                icon="🚀",
-                url_path="launch_bot_v2"
-            ),
+        "Accounts": [
             st.Page(
                 "frontend/pages/orchestration/credentials/app.py",
-                title="Accounts",
+                title="Credentials",
                 icon="🔑",
-                url_path="accounts"
+                url_path="creds"
             ),
             st.Page(
                 "frontend/pages/orchestration/portfolio/app.py",
@@ -65,6 +47,26 @@ def private_pages():
                 title="Trading",
                 icon="🪄",
                 url_path="trading"
+            ),
+        ],
+        "Trading Bots": [
+            st.Page(
+                "frontend/pages/orchestration/config_generator.py",
+                title="Config Generator",
+                icon="🧩",
+                url_path="config_generator"
+            ),
+            st.Page(
+                "frontend/pages/orchestration/launch_bot_v2/app.py",
+                title="Deploy V2",
+                icon="🚀",
+                url_path="launch_bot_v2"
+            ),
+            st.Page(
+                "frontend/pages/orchestration/instances/app.py",
+                title="Instances",
+                icon="🦅",
+                url_path="instances"
             ),
             st.Page(
                 "frontend/pages/orchestration/archived_bots/app.py",

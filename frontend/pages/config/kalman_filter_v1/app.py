@@ -2,22 +2,23 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yaml
-from backend.services.backend_api_client import BackendAPIClient
 from hummingbot.connector.connector_base import OrderType
 from plotly.subplots import make_subplots
 from pykalman import KalmanFilter
 
-from CONFIG import BACKEND_API_HOST, BACKEND_API_PORT
-from frontend.st_utils import initialize_st_page
+from frontend.st_utils import get_selected_server_config, initialize_st_page
 
 # Initialize the Streamlit page
 initialize_st_page(title="Kalman Filter V1", icon="📈", initial_sidebar_state="expanded")
 
 
 @st.cache_data
-def get_candles(connector_name="binance", trading_pair="BTC-USDT", interval="1m", max_records=5000):
-    backend_client = BackendAPIClient(BACKEND_API_HOST, BACKEND_API_PORT)
-    return backend_client.get_real_time_candles(connector_name, trading_pair, interval, max_records)
+def get_candles(host, port, username, password,
+               connector_name="binance", trading_pair="BTC-USDT", interval="1m", max_records=5000):
+    from api_client.sync_client import SyncHummingbotAPIClient
+    base_url = f"http://{host}:{port}" if not str(host).startswith(('http://', 'https://')) else f"{host}:{port}"
+    with SyncHummingbotAPIClient(base_url=base_url, username=username, password=password) as client:
+        return client.market_data.get_candles(connector_name, trading_pair, interval, max_records)
 
 
 @st.cache_data
@@ -89,8 +90,17 @@ with c2:
     transition_covariance = st.number_input("Transition Covariance", value=0.001, step=0.0001, format="%.4f")
 
 # Load candle data
-candle_data = get_candles(connector_name=candles_connector, trading_pair=candles_trading_pair, interval=interval,
-                          max_records=max_records)
+_server = get_selected_server_config()
+candle_data = get_candles(
+    _server.get('host', '127.0.0.1'),
+    _server.get('port', 8000),
+    _server.get('username', 'admin'),
+    _server.get('password', 'admin'),
+    connector_name=candles_connector,
+    trading_pair=candles_trading_pair,
+    interval=interval,
+    max_records=max_records,
+)
 df = pd.DataFrame(candle_data)
 df.index = pd.to_datetime(df['timestamp'], unit='s')
 candles_processed = add_indicators(df, observation_covariance, transition_covariance)

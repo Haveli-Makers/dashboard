@@ -1,4 +1,8 @@
+import base64
 from typing import Any, Dict, List
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from .base import BaseRouter
 
@@ -24,16 +28,43 @@ class AccountsRouter(BaseRouter):
         """List connector names that have credentials configured for an account."""
         return await self._get(f"/accounts/{account_name}/credentials")
 
+    async def get_account_credentials_details(self, account_name: str) -> List[Dict[str, Any]]:
+        """Fetch credential details for an account, including masked parameter values."""
+        return await self._get(f"/accounts/{account_name}/credentials/details")
+
+    async def _get_server_public_key(self):
+        """Fetch and load the server RSA public key."""
+        response = await self._get("/accounts/public-key")
+        pem = response["public_key"].encode()
+        return serialization.load_pem_public_key(pem)
+
+    def _encrypt_value(self, public_key, value: str) -> str:
+        """RSA-OAEP/SHA-256 encrypt a string and return base64-encoded ciphertext."""
+        ciphertext = public_key.encrypt(
+            value.encode(),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        return base64.b64encode(ciphertext).decode()
+
     async def add_credential(
         self,
         account_name: str,
         connector_name: str,
         credentials: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Add or update connector credentials for an account."""
+        """Add or update connector credentials for an account, encrypting values with RSA-OAEP."""
+        public_key = await self._get_server_public_key()
+        encrypted = {
+            k: self._encrypt_value(public_key, v) if isinstance(v, str) else v
+            for k, v in credentials.items()
+        }
         return await self._post(
             f"/accounts/add-credential/{account_name}/{connector_name}",
-            json=credentials
+            json={"credentials": encrypted, "encrypted": True}
         )
 
     async def delete_credential(self, account_name: str, connector_name: str) -> Dict[str, Any]:

@@ -250,7 +250,6 @@ with scheduled_tab:
             if st.button("Run now", type="primary", use_container_width=True):
                 try:
                     result = backend_api_client.scripts.run_script_schedule_now(selected_schedule_id)
-                    render_output(result)
                 except Exception as exc:
                     st.error(f"Scheduled run failed: {exc}")
         with history_col:
