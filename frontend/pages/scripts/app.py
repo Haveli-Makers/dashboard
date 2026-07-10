@@ -296,7 +296,7 @@ with scheduled_tab:
         else:
             name = st.text_input("Schedule name", placeholder="e.g. update hourly balance")
             default_index = scripts.index("spread_capture_standalone") if "spread_capture_standalone" in scripts else 0
-            selected_script = "spread_capture_standalone"
+            selected_script = st.selectbox("Script", scripts, index=default_index, key="schedule_script_name")
             default_body, config_template = build_script_run_body(selected_script)
 
             if config_template:
@@ -309,7 +309,7 @@ with scheduled_tab:
 
             if config_template:
                 st.subheader("Config inputs")
-                config = render_config_inputs(config_template, prefix="schedule")
+                config = render_config_inputs(config_template, prefix=f"schedule_{selected_script}")
             else:
                 st.info("No config template was returned for this script.")
                 config = {}
@@ -369,10 +369,11 @@ with instant_tab:
     if not scripts:
         st.info("No scripts are currently available from the API.")
     else:
+        instant_default_index = scripts.index("spread_capture_standalone") if "spread_capture_standalone" in scripts else 0
         selected_script = st.selectbox(
             "Script",
-            ["spread_capture_standalone"],
-            index=0,
+            scripts,
+            index=instant_default_index,
             key="instant_script_name"
         )
 
@@ -386,7 +387,7 @@ with instant_tab:
 
         if config_template:
             st.subheader("Config inputs")
-            config = render_config_inputs(config_template, prefix="instant")
+            config = render_config_inputs(config_template, prefix=f"instant_{selected_script}")
         else:
             st.info("No config template was returned for this script.")
             config = {}
