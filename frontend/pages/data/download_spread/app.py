@@ -242,13 +242,13 @@ if "download_spread__spread_df" in st.session_state:
         with col2:
             sample_count_option = st.selectbox(
                 "Number of spreads",
-                options=["24 hrs (All)", "10", "100", "200", "500", "1000"],
-                index=0,  # Default to 24 hrs
+                options=["All", "10", "100", "200", "500", "1000"],
+                index=0,  # Default to All
                 key=f"spread_sample_count_{selected_connector}_{selected_pair}",
                 label_visibility="collapsed"
             )
 
-        if sample_count_option == "24 hrs (All)":
+        if sample_count_option == "All":
             selected_sample_count = pd.to_numeric(row.get("sample_count"), errors="coerce")
             sample_limit = int(selected_sample_count) if pd.notna(selected_sample_count) else 100000
         else:
@@ -268,19 +268,15 @@ if "download_spread__spread_df" in st.session_state:
                         local_tz = datetime.datetime.now().astimezone().tzinfo
                         samples_df["timestamp"] = pd.to_datetime(
                             samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
-                    total_samples = samples_response.get("count", len(samples_df))
-                    if sample_count_option == "24 hrs (All)":
-                        display_samples_df = samples_df
-                    else:
-                        display_samples_df = samples_df.head(int(sample_count_option))
+                    total_samples = samples_response.get("total_count", samples_response.get("count", len(samples_df)))
 
                     st.dataframe(
-                        display_samples_df,
+                        samples_df,
                         use_container_width=True,
                         key=f"spread_samples_table_{selected_connector}_{selected_pair}_{sample_count_option}",
                     )
-                    st.caption(f"Showing {len(display_samples_df)} of {total_samples} samples retrieved")
-                    samples_csv = display_samples_df.to_csv(index=False)
+                    st.caption(f"Showing {len(samples_df)} of {total_samples} samples available")
+                    samples_csv = samples_df.to_csv(index=False)
                     st.download_button(
                         label="Download Samples as CSV",
                         data=samples_csv,
