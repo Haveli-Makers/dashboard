@@ -37,6 +37,8 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
 
     columns_spec = [2, *([3] * max(len(parameter_items), 1)), 2, 1]
 
+    row_key = f"{account_name}_{connector_name}_{alias or 'master'}"
+
     with st.container(border=True):
         cols = st.columns(columns_spec, vertical_alignment="bottom")
 
@@ -45,7 +47,7 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
                 "Connector",
                 value=connector_name,
                 disabled=True,
-                key=f"{account_name}_{connector_name}_connector",
+                key=f"{row_key}_connector",
             )
 
         if parameter_items:
@@ -55,7 +57,7 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
                         parameter_name.replace("_", " ").title(),
                         value=str(parameter_value),
                         disabled=True,
-                        key=f"{account_name}_{connector_name}_{parameter_name}",
+                        key=f"{row_key}_{parameter_name}",
                     )
         else:
             with cols[1]:
@@ -63,22 +65,22 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
                     "Parameters",
                     value="No parameters",
                     disabled=True,
-                    key=f"{account_name}_{connector_name}_parameters",
+                    key=f"{row_key}_parameters",
                 )
 
         with cols[-2]:
-            type_display = f"{credential_type}"
+            type_display = alias if alias else credential_type
             st.text_input(
-                "Type",
+                "Account Type",
                 value=type_display,
                 disabled=True,
-                key=f"{account_name}_{connector_name}_type",
+                key=f"{row_key}_type",
             )
 
         with cols[-1]:
             st.write("")
-            if st.button("🗑️", key=f"delete_credential_{account_name}_{connector_name}"):
-                client.accounts.delete_credential(account_name, connector_name)
+            if st.button("🗑️", key=f"delete_credential_{row_key}"):
+                client.accounts.delete_credential(account_name, alias or connector_name)
                 st.rerun()
 
 
