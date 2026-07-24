@@ -70,9 +70,10 @@ class AccountsRouter(BaseRouter):
             params=params,
         )
 
-    async def delete_credential(self, account_name: str, connector_name: str) -> Dict[str, Any]:
+    async def delete_credential(self, account_name: str, connector_name: str, alias: Optional[str] = None) -> Dict[str, Any]:
         """Delete connector credentials for an account."""
-        return await self._post(f"/accounts/delete-credential/{account_name}/{connector_name}")
+        params = {"alias": alias} if alias else None
+        return await self._post(f"/accounts/delete-credential/{account_name}/{connector_name}", params=params)
 
     # Gateway Wallet Management
     async def add_gateway_wallet(

@@ -80,7 +80,7 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
         with cols[-1]:
             st.write("")
             if st.button("🗑️", key=f"delete_credential_{row_key}"):
-                client.accounts.delete_credential(account_name, alias or connector_name)
+                client.accounts.delete_credential(account_name, connector_name, alias=alias)
                 st.rerun()
 
 
