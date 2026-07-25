@@ -3,19 +3,27 @@ import time
 import pandas as pd
 import streamlit as st
 
+from frontend.components.bot_stream import get_stream
 from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.visualization.live_bot_card import render_controller_live
 
 initialize_st_page(icon="🦅", show_readme=False)
 
 # Initialize backend client
 backend_api_client = get_backend_api_client()
 
+# Start the broker (MQTT-over-WebSocket) subscriber so bot cards can render live data.
+# Singleton across reruns — reuses one socket. Broker is fixed via CONFIG (single broker);
+# switching servers in the sidebar does NOT repoint the broker.
+bot_stream = get_stream()
+
 # Initialize session state for auto-refresh
 if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = True
 
-# Set refresh interval
-REFRESH_INTERVAL = 10  # seconds
+# Fragment refresh interval. Kept short so the live broker data on each card updates in
+# near real-time; structural REST calls re-run on the same beat (acceptable for a local backend).
+REFRESH_INTERVAL = 2  # seconds
 
 
 def stop_bot(bot_name):
@@ -135,154 +143,112 @@ def render_bot_card(bot_name):
                             archive_bot(bot_name)
 
                 if is_running:
-                    # Calculate totals
-                    active_controllers = []
-                    stopped_controllers = []
+                    # Live data streamed from the broker, keyed by controller_id.
+                    bot_stream_data = bot_stream.get_bot_data(bot_name)
+
+                    # Classify controllers using REST config (structure / kill switch), but read
+                    # all metrics from the live stream. Detect error controllers from REST status.
+                    active_configs = []
+                    stopped_configs = []
                     error_controllers = []
-                    total_global_pnl_quote = 0
-                    total_volume_traded = 0
-                    total_unrealized_pnl_quote = 0
 
                     for controller, inner_dict in performance.items():
-                        controller_status = inner_dict.get("status")
-                        if controller_status == "error":
+                        if inner_dict.get("status") == "error":
                             error_controllers.append({
                                 "Controller": controller,
                                 "Error": inner_dict.get("error", "Unknown error")
                             })
+
+                    for controller_config in controller_configs:
+                        controller = controller_config.get("id")
+                        if any(e["Controller"] == controller for e in error_controllers):
                             continue
-
-                        controller_performance = inner_dict.get("performance", {})
-                        controller_config = next(
-                            (config for config in controller_configs if config.get("id") == controller), {}
-                        )
-
-                        controller_name = controller_config.get("controller_name", controller)
-
-                        connector_name = controller_config.get("connector_name", "N/A")
-                        trading_pair = controller_config.get("trading_pair", "N/A")
-                        kill_switch_status = controller_config.get("manual_kill_switch", False)
-
-                        realized_pnl_quote = controller_performance.get("realized_pnl_quote", 0)
-                        unrealized_pnl_quote = controller_performance.get("unrealized_pnl_quote", 0)
-                        global_pnl_quote = controller_performance.get("global_pnl_quote", 0)
-                        volume_traded = controller_performance.get("volume_traded", 0)
-
-                        close_types = controller_performance.get("close_type_counts", {})
-                        tp = close_types.get("CloseType.TAKE_PROFIT", 0)
-                        sl = close_types.get("CloseType.STOP_LOSS", 0)
-                        time_limit = close_types.get("CloseType.TIME_LIMIT", 0)
-                        ts = close_types.get("CloseType.TRAILING_STOP", 0)
-                        refreshed = close_types.get("CloseType.EARLY_STOP", 0)
-                        failed = close_types.get("CloseType.FAILED", 0)
-                        close_types_str = f"TP: {tp} | SL: {sl} | TS: {ts} | TL: {time_limit} | ES: {refreshed} | F: {failed}"
-
-                        controller_info = {
-                            "Select": False,
-                            "ID": controller_config.get("id"),
-                            "Controller": controller_name,
-                            "Connector": connector_name,
-                            "Trading Pair": trading_pair,
-                            "Realized PNL ($)": round(realized_pnl_quote, 2),
-                            "Unrealized PNL ($)": round(unrealized_pnl_quote, 2),
-                            "NET PNL ($)": round(global_pnl_quote, 2),
-                            "Volume ($)": round(volume_traded, 2),
-                            "Close Types": close_types_str,
-                            "_controller_id": controller
-                        }
-
-                        if kill_switch_status:
-                            stopped_controllers.append(controller_info)
+                        if controller_config.get("manual_kill_switch", False):
+                            stopped_configs.append(controller_config)
                         else:
-                            active_controllers.append(controller_info)
+                            active_configs.append(controller_config)
 
-                        total_global_pnl_quote += global_pnl_quote
-                        total_volume_traded += volume_traded
-                        total_unrealized_pnl_quote += unrealized_pnl_quote
+                    # Aggregate bot-level metrics from the live stream.
+                    total_pnl_quote = 0.0
+                    total_unrealized_pnl_quote = 0.0
+                    total_volume_traded = 0.0
+                    for cdata in bot_stream_data.values():
+                        perf = cdata.get("performance_data", {})
+                        total_pnl_quote += perf.get("total_pnl_quote", 0) or 0
+                        total_unrealized_pnl_quote += perf.get("unrealized_pnl_quote", 0) or 0
+                        total_volume_traded += (perf.get("buy_volume_quote", 0) or 0) + \
+                            (perf.get("sell_volume_quote", 0) or 0)
 
-                    total_global_pnl_pct = total_global_pnl_quote / total_volume_traded if total_volume_traded > 0 else 0
+                    total_pnl_pct = total_pnl_quote / total_volume_traded if total_volume_traded > 0 else 0
 
-                    # Display metrics
+                    # Display aggregate metrics
                     col1, col2, col3, col4 = st.columns(4)
-
                     with col1:
-                        st.metric("🏦 NET PNL", f"${total_global_pnl_quote:.2f}")
+                        st.metric("🏦 NET PNL", f"${total_pnl_quote:.2f}")
                     with col2:
                         st.metric("💹 Unrealized PNL", f"${total_unrealized_pnl_quote:.2f}")
                     with col3:
-                        st.metric("📊 NET PNL (%)", f"{total_global_pnl_pct:.2%}")
+                        st.metric("📊 NET PNL (%)", f"{total_pnl_pct:.2%}")
                     with col4:
                         st.metric("💸 Volume Traded", f"${total_volume_traded:.2f}")
 
-                    # Active Controllers
-                    if active_controllers:
+                    def _controller_meta(config):
+                        return {
+                            "controller_name": config.get("controller_name", config.get("id")),
+                            "connector_name": config.get("connector_name", "N/A"),
+                            "trading_pair": config.get("trading_pair", "N/A"),
+                            "kill_switch": config.get("manual_kill_switch", False),
+                        }
+
+                    # Active Controllers — live panels + stop control
+                    if active_configs:
                         st.success("🚀 **Active Controllers:** Controllers currently running and trading")
-                        active_df = pd.DataFrame(active_controllers)
+                        for config in active_configs:
+                            with st.container(border=True):
+                                render_controller_live(
+                                    config.get("controller_type"),
+                                    _controller_meta(config),
+                                    bot_stream_data.get(config.get("id"), {}),
+                                )
 
-                        edited_active_df = st.data_editor(
-                            active_df,
-                            column_config={
-                                "Select": st.column_config.CheckboxColumn(
-                                    "Select",
-                                    help="Select controllers to stop",
-                                    default=False,
-                                ),
-                                "_controller_id": None,  # Hide this column
-                            },
-                            disabled=[col for col in active_df.columns if col != "Select"],
-                            hide_index=True,
-                            use_container_width=True,
-                            key=f"active_table_{bot_name}"
+                        name_by_id = {c.get("id"): c.get("controller_name", c.get("id")) for c in active_configs}
+                        selected_active = st.multiselect(
+                            "Select controllers to stop",
+                            options=list(name_by_id.keys()),
+                            format_func=lambda cid: name_by_id.get(cid, cid),
+                            key=f"stop_select_{bot_name}",
                         )
+                        if selected_active and st.button(f"⏹️ Stop Selected ({len(selected_active)})",
+                                                         key=f"stop_active_{bot_name}",
+                                                         type="secondary"):
+                            with st.spinner(f"Stopping {len(selected_active)} controller(s)..."):
+                                stop_controllers(bot_name, selected_active)
+                                time.sleep(1)
 
-                        selected_active = [
-                            row["_controller_id"]
-                            for _, row in edited_active_df.iterrows()
-                            if row["Select"]
-                        ]
-
-                        if selected_active:
-                            if st.button(f"⏹️ Stop Selected ({len(selected_active)})",
-                                         key=f"stop_active_{bot_name}",
-                                         type="secondary"):
-                                with st.spinner(f"Stopping {len(selected_active)} controller(s)..."):
-                                    stop_controllers(bot_name, selected_active)
-                                    time.sleep(1)
-
-                    # Stopped Controllers
-                    if stopped_controllers:
+                    # Stopped Controllers — live panels + start control
+                    if stopped_configs:
                         st.warning("💤 **Stopped Controllers:** Controllers that are paused or stopped")
-                        stopped_df = pd.DataFrame(stopped_controllers)
+                        for config in stopped_configs:
+                            with st.container(border=True):
+                                render_controller_live(
+                                    config.get("controller_type"),
+                                    _controller_meta(config),
+                                    bot_stream_data.get(config.get("id"), {}),
+                                )
 
-                        edited_stopped_df = st.data_editor(
-                            stopped_df,
-                            column_config={
-                                "Select": st.column_config.CheckboxColumn(
-                                    "Select",
-                                    help="Select controllers to start",
-                                    default=False,
-                                ),
-                                "_controller_id": None,  # Hide this column
-                            },
-                            disabled=[col for col in stopped_df.columns if col != "Select"],
-                            hide_index=True,
-                            use_container_width=True,
-                            key=f"stopped_table_{bot_name}"
+                        name_by_id = {c.get("id"): c.get("controller_name", c.get("id")) for c in stopped_configs}
+                        selected_stopped = st.multiselect(
+                            "Select controllers to start",
+                            options=list(name_by_id.keys()),
+                            format_func=lambda cid: name_by_id.get(cid, cid),
+                            key=f"start_select_{bot_name}",
                         )
-
-                        selected_stopped = [
-                            row["_controller_id"]
-                            for _, row in edited_stopped_df.iterrows()
-                            if row["Select"]
-                        ]
-
-                        if selected_stopped:
-                            if st.button(f"▶️ Start Selected ({len(selected_stopped)})",
-                                         key=f"start_stopped_{bot_name}",
-                                         type="primary"):
-                                with st.spinner(f"Starting {len(selected_stopped)} controller(s)..."):
-                                    start_controllers(bot_name, selected_stopped)
-                                    time.sleep(1)
+                        if selected_stopped and st.button(f"▶️ Start Selected ({len(selected_stopped)})",
+                                                          key=f"start_stopped_{bot_name}",
+                                                          type="primary"):
+                            with st.spinner(f"Starting {len(selected_stopped)} controller(s)..."):
+                                start_controllers(bot_name, selected_stopped)
+                                time.sleep(1)
 
                     # Error Controllers
                     if error_controllers:
