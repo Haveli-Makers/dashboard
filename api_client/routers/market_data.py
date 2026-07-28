@@ -433,7 +433,8 @@ class MarketDataRouter(BaseRouter):
     async def get_spread_data(
         self,
         pair: str,
-        connector: str
+        connector: str,
+        limit: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Get raw spread samples from database for a specific connector and trading pair.
@@ -441,6 +442,7 @@ class MarketDataRouter(BaseRouter):
         Args:
             pair: Trading pair filter (e.g., "BTC-USDT")
             connector: Connector filter (e.g., "binance")
+            limit: Maximum number of spread samples to return 
 
         Returns:
             Dictionary with spread data samples and count
@@ -449,5 +451,6 @@ class MarketDataRouter(BaseRouter):
             # Get spread data for specific pair and connector
             data = await client.market_data.get_spread_data(pair="BTC-USDT", connector="binance")
         """
-        return await self._get(f"/market-data/spread-data/{connector}/{pair}")
+        params = {"limit": limit} if limit is not None else None
+        return await self._get(f"/market-data/spread-data/{connector}/{pair}", params=params)
 

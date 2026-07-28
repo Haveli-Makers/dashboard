@@ -1,5 +1,5 @@
+from typing import Any, Dict, List, Optional
 import base64
-from typing import Any, Dict, List
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -54,7 +54,8 @@ class AccountsRouter(BaseRouter):
         self,
         account_name: str,
         connector_name: str,
-        credentials: Dict[str, Any]
+        credentials: Dict[str, Any],
+        alias: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add or update connector credentials for an account, encrypting values with RSA-OAEP."""
         public_key = await self._get_server_public_key()
@@ -62,14 +63,17 @@ class AccountsRouter(BaseRouter):
             k: self._encrypt_value(public_key, v) if isinstance(v, str) else v
             for k, v in credentials.items()
         }
+        params = {"alias": alias} if alias else None
         return await self._post(
             f"/accounts/add-credential/{account_name}/{connector_name}",
-            json={"credentials": encrypted, "encrypted": True}
+            json={"credentials": encrypted, "encrypted": True},
+            params=params,
         )
 
-    async def delete_credential(self, account_name: str, connector_name: str) -> Dict[str, Any]:
+    async def delete_credential(self, account_name: str, connector_name: str, alias: Optional[str] = None) -> Dict[str, Any]:
         """Delete connector credentials for an account."""
-        return await self._post(f"/accounts/delete-credential/{account_name}/{connector_name}")
+        params = {"alias": alias} if alias else None
+        return await self._post(f"/accounts/delete-credential/{account_name}/{connector_name}", params=params)
 
     # Gateway Wallet Management
     async def add_gateway_wallet(
