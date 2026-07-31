@@ -1,6 +1,8 @@
 - ccxt
+- aiohttp
 - cryptography
 - streamlit>=1.36.0
+- streamlit-authenticator==0.3.2
 - watchdog
 - plotly
 - pycoingecko
@@ -10,3 +12,4 @@
 - pandas_ta
 - sqlalchemy
 - pyyaml
+- python-dotenv

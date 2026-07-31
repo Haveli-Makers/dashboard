@@ -27,6 +27,34 @@ class ScriptsRouter(BaseRouter):
         """Get script configuration template with default values."""
         return await self._get(f"/scripts/{script_name}/config/template")
 
+    async def run_script_instant(self, run_request: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a strategy script immediately."""
+        return await self._post("/scripts/runs/instant", json=run_request)
+
+    async def run_script(self, run_request: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a script once with an inline configuration."""
+        return await self._post("/scripts/run", json=run_request)
+
+    async def create_script_schedule(self, schedule_request: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a recurring script schedule."""
+        return await self._post("/scripts/schedules/", json=schedule_request)
+
+    async def list_script_schedules(self) -> List[Dict[str, Any]]:
+        """List recurring script schedules."""
+        return await self._get("/scripts/schedules/")
+
+    async def delete_script_schedule(self, schedule_id: str) -> Dict[str, Any]:
+        """Delete a recurring script schedule."""
+        return await self._delete(f"/scripts/schedules/{schedule_id}")
+
+    async def run_script_schedule_now(self, schedule_id: str) -> Dict[str, Any]:
+        """Trigger a schedule immediately and store its history."""
+        return await self._post(f"/scripts/schedules/{schedule_id}/run")
+
+    async def get_script_schedule_history(self, schedule_id: str, limit: int = 50) -> Dict[str, Any]:
+        """Get recent output history for a schedule."""
+        return await self._get(f"/scripts/schedules/{schedule_id}/history", params={"limit": limit})
+
     # Script Configuration Operations
     async def list_script_configs(self) -> List[Dict]:
         """List all script configurations with metadata."""
