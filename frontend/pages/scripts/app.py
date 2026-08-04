@@ -130,6 +130,7 @@ def render_config_inputs(config_template, prefix="config"):
                 key=f"{prefix}_{field_name}"
             )
         elif "int" in annotation:
+        if "int" in annotation:
             config[field_name] = st.number_input(
                 prompt,
                 value=int(default) if default is not None else 0,
@@ -336,6 +337,7 @@ with scheduled_tab:
                 format_func=format_script_label,
                 key="schedule_script_name"
             )
+            selected_script = st.selectbox("Script", scripts, index=default_index, key="schedule_script_name")
             default_body, config_template = build_script_run_body(selected_script)
 
             if config_template:
