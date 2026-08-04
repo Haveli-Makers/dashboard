@@ -173,7 +173,8 @@ class BotOrchestrationRouter(BaseRouter):
             credentials_profile: str,
             script: Optional[str] = None,
             script_config: Optional[str] = None,
-            image: str = "hummingbot/hummingbot:latest"
+            image: str = "hummingbot/hummingbot:latest",
+            headless: bool = False
     ) -> Dict[str, Any]:
         """
         Creates and autostart a v2 script with a configuration if present.
@@ -184,6 +185,11 @@ class BotOrchestrationRouter(BaseRouter):
             script: Script name to run (without .py extension)
             script_config: Script configuration file name (without .yml extension)
             image: Docker image for the Hummingbot instance
+            headless: Run without the interactive UI. NOTE: Hummingbot's own quickstart script
+                unconditionally forces mqtt_bridge.mqtt_autostart=True when headless=True,
+                overriding conf_client.yml. Keep this False so the MQTT bridge stays disabled
+                (see conf_client.yml mqtt_autostart) until the underlying MQTT startup hang in
+                this Hummingbot build is fixed upstream.
 
         Returns:
             Dictionary with creation response and instance details
@@ -200,7 +206,8 @@ class BotOrchestrationRouter(BaseRouter):
         script_deployment = {
             "instance_name": instance_name,
             "credentials_profile": credentials_profile,
-            "image": image
+            "image": image,
+            "headless": headless
         }
         if script is not None:
             script_deployment["script"] = script
