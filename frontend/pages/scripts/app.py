@@ -36,6 +36,10 @@ def get_configs():
         return []
 
 
+def format_script_label(script_name):
+    return script_name.replace("_", " ")
+
+
 def get_config_names(configs):
     return [config.get("config_name") for config in configs if config.get("config_name")]
 
@@ -89,6 +93,24 @@ def build_saved_script_config(script_name, config):
     return saved_config
 
 
+_OPTION_LIST_RE = re.compile(r"\(([^()]+)\)\s*:?\s*$")
+_OPTION_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def extract_prompt_options(prompt):
+    """Pull a dropdown option list out of prompts like '... (binance, kucoin, ...):'."""
+    match = _OPTION_LIST_RE.search(prompt)
+    if not match:
+        return prompt, None
+    tokens = [token.strip() for token in match.group(1).split(",")]
+    if len(tokens) < 2 or not all(_OPTION_TOKEN_RE.match(token) for token in tokens):
+        return prompt, None
+    label = prompt[:match.start()].rstrip()
+    if prompt.rstrip().endswith(":"):
+        label += ":"
+    return label, tokens
+
+
 def render_config_inputs(config_template, prefix="config"):
     config = {}
     for field_name, field_info in config_template.items():
@@ -96,6 +118,18 @@ def render_config_inputs(config_template, prefix="config"):
         annotation = field_info.get("annotation", "")
         prompt = field_info.get("prompt", field_name)
 
+        label, options = extract_prompt_options(prompt) if "str" in annotation or not annotation else (prompt, None)
+
+        if options:
+            default_str = str(default) if default is not None else ""
+            index = options.index(default_str) if default_str in options else 0
+            config[field_name] = st.selectbox(
+                label,
+                options=options,
+                index=index,
+                key=f"{prefix}_{field_name}"
+            )
+        elif "int" in annotation:
         if "int" in annotation:
             config[field_name] = st.number_input(
                 prompt,
@@ -296,6 +330,13 @@ with scheduled_tab:
         else:
             name = st.text_input("Schedule name", placeholder="e.g. update hourly balance")
             default_index = scripts.index("spread_capture_standalone") if "spread_capture_standalone" in scripts else 0
+            selected_script = st.selectbox(
+                "Script",
+                scripts,
+                index=default_index,
+                format_func=format_script_label,
+                key="schedule_script_name"
+            )
             selected_script = st.selectbox("Script", scripts, index=default_index, key="schedule_script_name")
             default_body, config_template = build_script_run_body(selected_script)
 
@@ -374,6 +415,7 @@ with instant_tab:
             "Script",
             scripts,
             index=instant_default_index,
+            format_func=format_script_label,
             key="instant_script_name"
         )
 
