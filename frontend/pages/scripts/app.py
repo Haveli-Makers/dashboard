@@ -130,12 +130,12 @@ def render_config_inputs(config_template, prefix="config"):
                 key=f"{prefix}_{field_name}"
             )
         elif "int" in annotation:
-        if "int" in annotation:
-            config[field_name] = st.number_input(
-                prompt,
-                value=int(default) if default is not None else 0,
-                key=f"{prefix}_{field_name}"
-            )
+            if "int" in annotation:
+                config[field_name] = st.number_input(
+                    prompt,
+                    value=int(default) if default is not None else 0,
+                    key=f"{prefix}_{field_name}"
+                )
         elif "str" in annotation:
             config[field_name] = st.text_input(
                 prompt,
