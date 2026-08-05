@@ -118,6 +118,31 @@ def render_config_inputs(config_template, prefix="config"):
         annotation = field_info.get("annotation", "")
         prompt = field_info.get("prompt", field_name)
 
+        input_type = field_info.get("input_type")
+        explicit_options = field_info.get("options")
+
+        if input_type == "multiselect" and explicit_options:
+            default_list = [v.strip() for v in str(default).split(",") if v.strip()] if default else []
+            selected = st.multiselect(
+                prompt,
+                options=explicit_options,
+                default=[v for v in default_list if v in explicit_options],
+                key=f"{prefix}_{field_name}"
+            )
+            config[field_name] = ",".join(selected)
+            continue
+
+        if input_type == "select" and explicit_options:
+            default_str = str(default) if default is not None else ""
+            index = explicit_options.index(default_str) if default_str in explicit_options else 0
+            config[field_name] = st.selectbox(
+                prompt,
+                options=explicit_options,
+                index=index,
+                key=f"{prefix}_{field_name}"
+            )
+            continue
+
         label, options = extract_prompt_options(prompt) if "str" in annotation or not annotation else (prompt, None)
 
         if options:
