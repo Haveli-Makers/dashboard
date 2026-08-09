@@ -13,3 +13,4 @@
 - sqlalchemy
 - pyyaml
 - python-dotenv
+- openpyxl
