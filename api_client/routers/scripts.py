@@ -47,6 +47,10 @@ class ScriptsRouter(BaseRouter):
         """Delete a recurring script schedule."""
         return await self._delete(f"/scripts/schedules/{schedule_id}")
 
+    async def set_script_schedule_enabled(self, schedule_id: str, enabled: bool) -> Dict[str, Any]:
+        """Pause (enabled=False) or resume (enabled=True) a recurring script schedule."""
+        return await self._post(f"/scripts/schedules/{schedule_id}/enabled", json={"enabled": enabled})
+
     async def run_script_schedule_now(self, schedule_id: str) -> Dict[str, Any]:
         """Trigger a schedule immediately and store its history."""
         return await self._post(f"/scripts/schedules/{schedule_id}/run")
