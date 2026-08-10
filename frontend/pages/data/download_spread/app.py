@@ -1,9 +1,23 @@
 import datetime
+import re
 import traceback
 
 import pandas as pd
 import streamlit as st
 
+from frontend.email_utils import (
+    SAMPLES_EMAIL_BODY_TEMPLATE,
+    SAMPLES_EMAIL_SUBJECT_TEMPLATE,
+    SPREAD_EMAIL_BODY_TEMPLATE,
+    SPREAD_EMAIL_SUBJECT_TEMPLATE,
+    build_samples_email_context,
+    build_spread_email_context,
+    dataframes_to_xlsx_bytes,
+    is_smtp_configured,
+    parse_recipients,
+    render_template,
+    send_email_with_xlsx,
+)
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 SUPPORTED_EXCHANGES = [
@@ -203,88 +217,235 @@ if "download_spread__spread_df" in st.session_state:
     if failed_pairs:
         st.warning("Some pairs had errors:\n- " + "\n- ".join(failed_pairs))
 
-    st.subheader("Spread Data Details")
-    st.caption("Select a row to expand and view all samples for that trading pair.")
-
+    connectors_str = "_".join(connectors_used)
+    pairs_str = "_".join([p.replace("-", "") for p in pairs_list]) if pairs_list else "all"
     display_df = spread_df.drop(columns=["sample_count"], errors="ignore")
+    spread_csv = display_df.to_csv(index=False)
+    spread_xlsx_filename = f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.xlsx"
+
+    spread_sheets = {}
+    used_spread_sheet_names = set()
+    if "connector" in display_df.columns:
+        for connector_name in display_df["connector"].drop_duplicates():
+            sheet_name = re.sub(r"[\[\]:*?/\\]", "_", str(connector_name))[:31]
+            base_name, suffix = sheet_name, 2
+            while sheet_name in used_spread_sheet_names:
+                sheet_name = f"{base_name[:28]}_{suffix}"
+                suffix += 1
+            used_spread_sheet_names.add(sheet_name)
+            spread_sheets[sheet_name] = display_df[display_df["connector"] == connector_name].reset_index(drop=True)
+    else:
+        spread_sheets["Spread Data"] = display_df
+    spread_xlsx = dataframes_to_xlsx_bytes(spread_sheets)
+
+    header_col, download_col, email_col = st.columns([8, 1, 1])
+    with header_col:
+        st.subheader("Spread Data Details")
+    with download_col:
+        with st.popover("⬇️", use_container_width=True):
+            st.download_button(
+                label="Download as CSV",
+                data=spread_csv,
+                file_name=f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.csv",
+                mime="text/csv",
+                key="dl_spread",
+                use_container_width=True,
+            )
+            st.download_button(
+                label="Download as XLSX",
+                data=spread_xlsx,
+                file_name=spread_xlsx_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_spread_xlsx",
+                use_container_width=True,
+            )
+    with email_col:
+        with st.popover("📧", use_container_width=True):
+            if not is_smtp_configured():
+                st.info(
+                    "SMTP is not configured. Set SMTP_HOST, SMTP_USERNAME and SMTP_PASSWORD "
+                    "in the `.env` file to enable emailing."
+                )
+            recipients_raw = st.text_input(
+                "Recipient email(s)",
+                placeholder="alice@example.com, bob@example.com",
+                key="spread_email_recipients",
+            )
+            if st.button("Send Email", key="send_spread_email", use_container_width=True):
+                recipients = parse_recipients(recipients_raw)
+                if not recipients:
+                    st.error("Please enter at least one valid recipient email address.")
+                else:
+                    email_context = build_spread_email_context(
+                        connectors=connectors_used,
+                        pairs=pairs_list,
+                        window_hours=window_hours_used,
+                        row_count=len(display_df),
+                        failed_count=len(failed_pairs),
+                    )
+                    email_subject = render_template(SPREAD_EMAIL_SUBJECT_TEMPLATE, email_context)
+                    email_body = render_template(SPREAD_EMAIL_BODY_TEMPLATE, email_context)
+                    try:
+                        with st.spinner("Sending email..."):
+                            send_email_with_xlsx(
+                                to_emails=recipients,
+                                subject=email_subject,
+                                body=email_body,
+                                attachment_bytes=spread_xlsx,
+                                attachment_filename=spread_xlsx_filename,
+                            )
+                        st.success(f"Email sent to {', '.join(recipients)}")
+                    except Exception as email_err:
+                        st.error(f"Failed to send email: {str(email_err)}")
+
+    st.caption("Select one or more rows to view all samples for those trading pairs in a single table.")
+
     selection = st.dataframe(
         display_df,
         use_container_width=True,
-        selection_mode="single-row",
+        selection_mode="multi-row",
         on_select="rerun",
         key="spread_summary_table",
     )
 
-    connectors_str = "_".join(connectors_used)
-    pairs_str = "_".join([p.replace("-", "") for p in pairs_list]) if pairs_list else "all"
-    spread_csv = display_df.to_csv(index=False)
-    st.download_button(
-        label="Download Spread Data as CSV",
-        data=spread_csv,
-        file_name=f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.csv",
-        mime="text/csv",
-        key="dl_spread",
-    )
-
-    # Expand raw samples when a row is selected
     selected_rows = selection.selection.rows if selection.selection else []
     if selected_rows:
-        selected_idx = selected_rows[0]
-        row = spread_df.iloc[selected_idx]
-        selected_pair = row["pair"]
-        selected_connector = row["connector"]
+        selected_pairs_df = spread_df.iloc[selected_rows].reset_index(drop=True)
+        selected_keys = "_".join(
+            f"{r['connector']}-{r['pair']}" for _, r in selected_pairs_df.iterrows()
+        )
 
         col1, col2 = st.columns([8, 1])
-
         with col1:
-            st.subheader(f"Samples — {selected_connector} / {selected_pair}")
-
+            st.subheader("Samples for the selected Pairs")
         with col2:
             sample_count_option = st.selectbox(
                 "Number of spreads",
                 options=["All", "10", "100", "200", "500", "1000"],
                 index=0,  # Default to All
-                key=f"spread_sample_count_{selected_connector}_{selected_pair}",
+                key=f"spread_sample_count_{selected_keys}",
                 label_visibility="collapsed"
             )
 
-        if sample_count_option == "All":
-            selected_sample_count = pd.to_numeric(row.get("sample_count"), errors="coerce")
-            sample_limit = int(selected_sample_count) if pd.notna(selected_sample_count) else 100000
-        else:
-            sample_limit = int(sample_count_option)
+        with st.spinner("Fetching samples..."):
+            all_samples = []
+            samples_errors = []
+            for _, row in selected_pairs_df.iterrows():
+                selected_pair = row["pair"]
+                selected_connector = row["connector"]
 
-
-        with st.spinner(f"Fetching samples for {selected_pair} on {selected_connector}..."):
-            try:
-                samples_response = backend_api_client.market_data.get_spread_data(
-                    pair=selected_pair,
-                    connector=selected_connector,
-                    limit=sample_limit
-                )
-                if samples_response and samples_response.get("data"):
-                    samples_df = pd.DataFrame(samples_response["data"])
-                    if "timestamp" in samples_df.columns:
-                        local_tz = datetime.datetime.now().astimezone().tzinfo
-                        samples_df["timestamp"] = pd.to_datetime(
-                            samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
-                    total_samples = samples_response.get("total_count", samples_response.get("count", len(samples_df)))
-
-                    st.dataframe(
-                        samples_df,
-                        use_container_width=True,
-                        key=f"spread_samples_table_{selected_connector}_{selected_pair}_{sample_count_option}",
-                    )
-                    st.caption(f"Showing {len(samples_df)} of {total_samples} samples available")
-                    samples_csv = samples_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Samples as CSV",
-                        data=samples_csv,
-                        file_name=f"samples_{selected_connector}_{selected_pair.replace('-', '')}_{window_hours_used}h.csv",
-                        mime="text/csv",
-                        key="dl_samples",
-                    )
+                if sample_count_option == "All":
+                    sample_limit = 100000
                 else:
-                    st.info("No raw samples found for this trading pair.")
-            except Exception as samples_err:
-                st.error(f"Failed to fetch samples: {str(samples_err)}")
+                    sample_limit = int(sample_count_option)
+
+                try:
+                    samples_response = backend_api_client.market_data.get_spread_data(
+                        pair=selected_pair,
+                        connector=selected_connector,
+                        limit=sample_limit
+                    )
+                    if samples_response and samples_response.get("data"):
+                        pair_samples_df = pd.DataFrame(samples_response["data"])
+                        pair_samples_df["connector"] = selected_connector
+                        pair_samples_df["pair"] = selected_pair
+                        other_cols = [c for c in pair_samples_df.columns if c not in ("connector", "pair")]
+                        pair_samples_df = pair_samples_df[["connector", "pair"] + other_cols]
+                        all_samples.append(pair_samples_df)
+                    else:
+                        samples_errors.append(f"No raw samples found for {selected_pair} on {selected_connector}.")
+                except Exception as samples_err:
+                    samples_errors.append(f"Failed to fetch samples for {selected_pair} on {selected_connector}: {str(samples_err)}")
+
+        if samples_errors:
+            st.warning("\n\n".join(samples_errors))
+
+        if all_samples:
+            samples_df = pd.concat(all_samples, ignore_index=True)
+            if "timestamp" in samples_df.columns:
+                local_tz = datetime.datetime.now().astimezone().tzinfo
+                samples_df["timestamp"] = pd.to_datetime(
+                    samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            samples_header_col, samples_download_col, samples_email_col = st.columns([6, 1, 1])
+            with samples_header_col:
+                st.caption(f"Showing {len(samples_df)} samples across {len(selected_pairs_df)} pair(s)")
+
+            samples_csv = samples_df.to_csv(index=False)
+            samples_xlsx_filename = f"samples_{connectors_str}_{pairs_str}_{window_hours_used}h.xlsx"
+
+            samples_sheets = {}
+            used_sheet_names = set()
+            for pair_samples_df in all_samples:
+                pair_connector = pair_samples_df["connector"].iloc[0]
+                pair_name = pair_samples_df["pair"].iloc[0]
+                raw_name = f"{pair_connector}_{pair_name}"
+                sheet_name = re.sub(r"[\[\]:*?/\\]", "_", raw_name)[:31]
+                base_name, suffix = sheet_name, 2
+                while sheet_name in used_sheet_names:
+                    sheet_name = f"{base_name[:28]}_{suffix}"
+                    suffix += 1
+                used_sheet_names.add(sheet_name)
+                samples_sheets[sheet_name] = pair_samples_df
+            samples_xlsx = dataframes_to_xlsx_bytes(samples_sheets)
+
+            with samples_download_col:
+                with st.popover("⬇️", use_container_width=True):
+                    st.download_button(
+                        label="Download as CSV",
+                        data=samples_csv,
+                        file_name=f"samples_{connectors_str}_{pairs_str}_{window_hours_used}h.csv",
+                        mime="text/csv",
+                        key="dl_samples_csv",
+                        use_container_width=True,
+                    )
+                    st.download_button(
+                        label="Download as XLSX",
+                        data=samples_xlsx,
+                        file_name=samples_xlsx_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_samples_xlsx",
+                        use_container_width=True,
+                    )
+            with samples_email_col:
+                with st.popover("📧", use_container_width=True):
+                    if not is_smtp_configured():
+                        st.info(
+                            "SMTP is not configured. Set SMTP_HOST, SMTP_USERNAME and SMTP_PASSWORD "
+                            "in the `.env` file to enable emailing."
+                        )
+                    samples_recipients_raw = st.text_input(
+                        "Recipient email(s)",
+                        placeholder="alice@example.com, bob@example.com",
+                        key="samples_email_recipients",
+                    )
+                    if st.button("Send Email", key="send_samples_email", use_container_width=True):
+                        samples_recipients = parse_recipients(samples_recipients_raw)
+                        if not samples_recipients:
+                            st.error("Please enter at least one valid recipient email address.")
+                        else:
+                            samples_email_context = build_samples_email_context(
+                                connectors=sorted(selected_pairs_df["connector"].unique().tolist()),
+                                pairs=sorted(selected_pairs_df["pair"].unique().tolist()),
+                                row_count=len(samples_df),
+                            )
+                            samples_email_subject = render_template(SAMPLES_EMAIL_SUBJECT_TEMPLATE, samples_email_context)
+                            samples_email_body = render_template(SAMPLES_EMAIL_BODY_TEMPLATE, samples_email_context)
+                            try:
+                                with st.spinner("Sending email..."):
+                                    send_email_with_xlsx(
+                                        to_emails=samples_recipients,
+                                        subject=samples_email_subject,
+                                        body=samples_email_body,
+                                        attachment_bytes=samples_xlsx,
+                                        attachment_filename=samples_xlsx_filename,
+                                    )
+                                st.success(f"Email sent to {', '.join(samples_recipients)}")
+                            except Exception as samples_email_err:
+                                st.error(f"Failed to send email: {str(samples_email_err)}")
+
+            st.dataframe(
+                samples_df,
+                use_container_width=True,
+                key=f"spread_samples_table_{selected_keys}_{sample_count_option}",
+            )
