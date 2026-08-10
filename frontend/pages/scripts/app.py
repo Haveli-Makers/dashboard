@@ -19,6 +19,9 @@ backend_api_client = get_backend_api_client()
 if "scripts_history_expanded" not in st.session_state:
     st.session_state.scripts_history_expanded = False
 
+if "scripts_edit_target" not in st.session_state:
+    st.session_state.scripts_edit_target = None
+
 
 def get_scripts():
     try:
@@ -104,12 +107,12 @@ def strip_trailing_parenthetical(prompt):
     return label
 
 
-def render_config_inputs(config_template, prefix="config"):
+def render_config_inputs(config_template, prefix="config", overrides=None):
     config = {}
     for field_name, field_info in config_template.items():
-        if field_name == "script_file_name":
+        if field_name in ("script_file_name", "db_target"):
             continue
-        default = field_info.get("default")
+        default = overrides.get(field_name, field_info.get("default")) if overrides else field_info.get("default")
         annotation = field_info.get("annotation", "")
         prompt = field_info.get("prompt", field_name)
 
@@ -243,8 +246,6 @@ def schedules_to_overview_df(schedules):
             {
                 "Name": item.get("name"),
                 "Strategy": item.get("strategy_name"),
-                "Config": item.get("config_name"),
-                "Account": item.get("account_name") or "—",
                 "Cadence": cadence,
                 "Next run": item.get("next_run_at"),
                 "Last run": item.get("last_run_at") or "—",
@@ -276,31 +277,79 @@ with scheduled_tab:
         st.subheader("All scheduled workflows")
         st.dataframe(schedules_to_overview_df(schedules), use_container_width=True, hide_index=True)
 
-        schedule_labels = {f"{item['name']} ({item['id'][:8]})": item["id"] for item in schedules}
+        schedule_labels = {item["name"]: item["id"] for item in schedules}
         selected_label = st.selectbox("Workflow", list(schedule_labels.keys()))
         selected_schedule_id = schedule_labels[selected_label]
-        selected_name = next(s["name"] for s in schedules if s["id"] == selected_schedule_id)
+        selected_schedule = next(s for s in schedules if s["id"] == selected_schedule_id)
+        selected_name = selected_schedule["name"]
+        is_enabled = selected_schedule.get("enabled", True)
 
-        run_col, history_col, delete_col = st.columns(3)
+        run_col, toggle_col, edit_col, delete_col = st.columns(4)
         with run_col:
             if st.button("Run now", type="primary", use_container_width=True):
                 try:
                     result = backend_api_client.scripts.run_script_schedule_now(selected_schedule_id)
                 except Exception as exc:
                     st.error(f"Scheduled run failed: {exc}")
-        with history_col:
-            if st.button("View history", use_container_width=True):
-                st.session_state.scripts_history_expanded = True
+        with toggle_col:
+            toggle_label = "Deactivate" if is_enabled else "Activate"
+            if st.button(toggle_label, use_container_width=True):
+                try:
+                    backend_api_client.scripts.set_script_schedule_enabled(selected_schedule_id, not is_enabled)
+                    st.success(f"Schedule {'paused' if is_enabled else 'resumed'}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to update schedule: {exc}")
+        with edit_col:
+            if st.button("Edit", use_container_width=True):
+                st.session_state.scripts_edit_target = (
+                    None if st.session_state.scripts_edit_target == selected_schedule_id else selected_schedule_id
+                )
                 st.rerun()
         with delete_col:
             if st.button("Delete", use_container_width=True):
                 try:
                     backend_api_client.scripts.delete_script_schedule(selected_schedule_id)
-                    st.session_state.scripts_history_expanded = False
+                    st.session_state.scripts_edit_target = None
                     st.success("Schedule deleted")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Failed to delete schedule: {exc}")
+
+        if not is_enabled:
+            st.info(f"'{selected_name}' is paused and will not run automatically until reactivated.")
+
+        if st.session_state.scripts_edit_target == selected_schedule_id:
+            with st.expander(f"Edit config: {selected_name}", expanded=True):
+                strategy_name = selected_schedule["strategy_name"]
+                config_name = selected_schedule.get("config_name")
+                if not config_name:
+                    st.info("This schedule has no editable config file.")
+                else:
+                    try:
+                        current_config = backend_api_client.scripts.get_script_config(config_name)
+                    except Exception as exc:
+                        st.error(f"Failed to load config: {exc}")
+                        current_config = {}
+
+                    _, config_template = build_script_run_body(strategy_name)
+                    if config_template:
+                        updated_config = render_config_inputs(
+                            config_template, prefix=f"edit_{selected_schedule_id}", overrides=current_config
+                        )
+                        if st.button("Save changes", type="primary", key=f"save_edit_{selected_schedule_id}"):
+                            try:
+                                backend_api_client.scripts.create_or_update_script_config(
+                                    config_name,
+                                    build_saved_script_config(strategy_name, updated_config),
+                                )
+                                st.success("Config updated")
+                                st.session_state.scripts_edit_target = None
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Failed to update config: {exc}")
+                    else:
+                        st.info("No config template was returned for this script.")
 
         with st.expander(
             f"Run history: {selected_name} (up to 50 outputs)",
@@ -360,6 +409,10 @@ with scheduled_tab:
             interval_unit = st.selectbox("Unit", ["minutes", "hours", "weeks"])
             if st.button("Create schedule", type="primary"):
                 try:
+                    schedule_name = (name or f"{selected_script} schedule").strip()
+                    if any(s.get("name", "").strip().lower() == schedule_name.lower() for s in schedules):
+                        raise ValueError(f"A schedule named '{schedule_name}' already exists. Choose a different name.")
+
                     run_body = {"script_name": selected_script,"config": config,}
 
                     if not isinstance(run_body, dict):
@@ -384,7 +437,7 @@ with scheduled_tab:
                             "config": config,
                             "run_request": run_body,
                             "verbose": verbose,
-                            "name": name or f"{selected_script} schedule",
+                            "name": schedule_name,
                             "interval_value": int(interval_value),
                             "interval_unit": interval_unit,
                         }
@@ -428,11 +481,7 @@ with instant_tab:
             config = {}
         if st.button("Run now", type="primary"):
             try:
-                payload = {"script_name": selected_script,"config": config}
-                if not isinstance(payload, dict):
-                    raise ValueError("Request JSON must be an object.")
-                payload["script_name"] = selected_script
-                payload.setdefault("config", {})
+                payload = {"script_name": selected_script, "config": config}
                 result = backend_api_client.scripts.run_script(payload)
                 render_output(result)
             except json.JSONDecodeError as exc:
