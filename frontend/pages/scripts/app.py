@@ -114,6 +114,8 @@ def extract_prompt_options(prompt):
 def render_config_inputs(config_template, prefix="config"):
     config = {}
     for field_name, field_info in config_template.items():
+        if field_name == "script_file_name":
+            continue
         default = field_info.get("default")
         annotation = field_info.get("annotation", "")
         prompt = field_info.get("prompt", field_name)
@@ -130,12 +132,12 @@ def render_config_inputs(config_template, prefix="config"):
                 key=f"{prefix}_{field_name}"
             )
         elif "int" in annotation:
-        if "int" in annotation:
-            config[field_name] = st.number_input(
-                prompt,
-                value=int(default) if default is not None else 0,
-                key=f"{prefix}_{field_name}"
-            )
+            if "int" in annotation:
+                config[field_name] = st.number_input(
+                    prompt,
+                    value=int(default) if default is not None else 0,
+                    key=f"{prefix}_{field_name}"
+                )
         elif "str" in annotation:
             config[field_name] = st.text_input(
                 prompt,
@@ -253,12 +255,6 @@ def schedules_to_overview_df(schedules):
 
 scripts = get_scripts()
 
-st.subheader("Available Scripts")
-if scripts:
-    st.write(", ".join(scripts))
-else:
-    st.info("No scripts are currently available from the API.")
-
 scheduled_tab, instant_tab = st.tabs(["Scheduled Workflows", "Instant Run"])
 
 with scheduled_tab:
@@ -337,7 +333,6 @@ with scheduled_tab:
                 format_func=format_script_label,
                 key="schedule_script_name"
             )
-            selected_script = st.selectbox("Script", scripts, index=default_index, key="schedule_script_name")
             default_body, config_template = build_script_run_body(selected_script)
 
             if config_template:
@@ -354,13 +349,7 @@ with scheduled_tab:
             else:
                 st.info("No config template was returned for this script.")
                 config = {}
-            account_name = st.text_input("Account", key="schedule_account", placeholder="Optional")
             verbose = st.checkbox("Verbose output", key="schedule_verbose")
-            extra_args_text = st.text_input(
-                "Extra args",
-                key="schedule_extra_args",
-                placeholder="Optional, space separated",
-            )
             interval_value = st.number_input("Every", min_value=1, value=60, step=1)
             interval_unit = st.selectbox("Unit", ["minutes", "hours", "weeks"])
             if st.button("Create schedule", type="primary"):
@@ -388,9 +377,7 @@ with scheduled_tab:
                             "config_name": config_name,
                             "config": config,
                             "run_request": run_body,
-                            "account_name": account_name or None,
                             "verbose": verbose,
-                            "extra_args": [arg for arg in extra_args_text.split(" ") if arg],
                             "name": name or f"{selected_script} schedule",
                             "interval_value": int(interval_value),
                             "interval_unit": interval_unit,
