@@ -117,7 +117,7 @@ def extract_prompt_options(prompt):
 def render_config_inputs(config_template, prefix="config", overrides=None):
     config = {}
     for field_name, field_info in config_template.items():
-        if field_name in ("script_file_name", "db_target"):
+        if "prompt" not in field_info or field_info.get("show_on_dashboard") is False:
             continue
         default = overrides.get(field_name, field_info.get("default")) if overrides else field_info.get("default")
         annotation = field_info.get("annotation", "")
