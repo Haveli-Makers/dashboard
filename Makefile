@@ -23,7 +23,11 @@ detect_conda_bin := $(shell bash -c 'if [ "${CONDA_EXE} " == " " ]; then \
 CONDA_BIN := $(detect_conda_bin)
 
 run:
-	streamlit run main.py --server.headless true
+	@if ! "$(CONDA_BIN)/conda" env list | grep -qE '^dashboard[[:space:]]'; then \
+		echo "No conda env named 'dashboard'. Run 'make install' first."; \
+		exit 1; \
+	fi
+	"$(CONDA_BIN)/conda" run --no-capture-output -n dashboard python -m streamlit run main.py --server.headless true
 
 uninstall:
 	conda env remove -n dashboard -y

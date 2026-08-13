@@ -40,6 +40,7 @@ SUPPORTED_EXCHANGES = [
 # Initialize Streamlit page
 initialize_st_page(title="Download Spread", icon="📊")
 backend_api_client = get_backend_api_client()
+window_hours = 24
 c1, c2, c3 = st.columns([2, 2, 0.5])
 with c1:
     connectors = st.multiselect(
@@ -47,11 +48,11 @@ with c1:
         options=SUPPORTED_EXCHANGES,
         default=["coindcx"]
     )
-    trading_pairs = st.text_input("Trading Pairs", value="BTC-USDT")
 with c2:
-    st.text_input("Time Window (Hours)", value="24", disabled=True)
-    window_hours = 24
+    trading_pairs = st.text_input("Trading Pairs (BTC-USDT, ETH-USDT)", value="")
 with c3:
+    st.write("")
+    st.write("")
     get_data_button = st.button("Get Spread!")
 
 if get_data_button:
