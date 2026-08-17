@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta, timezone
 
+import aiohttp
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -13,7 +14,7 @@ backend_api_client = get_backend_api_client()
 c1, c2, c3, c4 = st.columns([2, 2, 2, 0.5])
 with c1:
     connector = st.selectbox("Exchange",
-                             ["binance_perpetual", "binance", "gate_io", "gate_io_perpetual", "kucoin", "ascend_ex", "okx", "coindcx", "mexc","kraken"],
+                             ["binance_perpetual", "binance", "gate_io", "gate_io_perpetual", "kucoin", "kucoin_perpetual", "okx", "coindcx", "wazirx", "zebpay", "coinex", "coinex_perpetual", "csx", "coinswitch"],
                              index=0)
     trading_pair = st.text_input("Trading Pair", value="BTC-USDT")
 with c2:
@@ -44,13 +45,45 @@ if get_data_button:
     start_ts = int(start_datetime.timestamp())
     end_ts = int(end_datetime.timestamp())
 
-    candles = backend_api_client.market_data.get_historical_candles(
-        connector_name=connector,
-        trading_pair=trading_pair,
-        interval=interval,
-        start_time=start_ts,
-        end_time=end_ts,
+    range_caption = (
+        f"Requested UTC range: `{datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}` → "
+        f"`{datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
     )
+
+    try:
+        candles = backend_api_client.market_data.get_historical_candles(
+            connector_name=connector,
+            trading_pair=trading_pair,
+            interval=interval,
+            start_time=start_ts,
+            end_time=end_ts,
+        )
+    except aiohttp.ClientConnectorError:
+        st.error(
+            f"Can't reach the backend API for **{connector}** / **{trading_pair}** / **{interval}**.\n\n"
+            "The backend server appears to be down or unreachable. Confirm it's running and retry."
+        )
+        st.stop()
+    except TimeoutError:
+        st.error(
+            f"Backend request timed out for **{connector}** / **{trading_pair}** / **{interval}**.\n\n"
+            f"{range_caption}\n\n"
+            "Tip: Try a shorter date range or a coarser interval — large 1m/5m ranges take longer to fetch."
+        )
+        st.stop()
+    except aiohttp.ClientResponseError as e:
+        st.error(
+            f"Backend returned HTTP {e.status} for **{connector}** / **{trading_pair}** / **{interval}**: {e.message}\n\n"
+            f"{range_caption}"
+        )
+        st.stop()
+    except Exception as e:
+        st.error(
+            f"Unexpected error fetching candles for **{connector}** / **{trading_pair}** / **{interval}**: "
+            f"{type(e).__name__}: {e}\n\n"
+            f"{range_caption}"
+        )
+        st.stop()
 
     if isinstance(candles, dict):
         if candles.get("status") == "success":
@@ -61,8 +94,7 @@ if get_data_button:
             err = str(candles["error"])
             st.error(
                 f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {err}\n\n"
-                f"Requested UTC range: `{datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}` → "
-                f"`{datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}`\n\n"
+                f"{range_caption}\n\n"
                 "Tip: Try a shorter date range."
             )
             st.stop()
@@ -74,8 +106,20 @@ if get_data_button:
         st.warning("No candle data returned for the selected parameters.")
         st.stop()
 
-    candles_df = pd.DataFrame(candles)
-    candles_df.index = pd.to_datetime(candles_df["timestamp"], unit='s')
+    try:
+        candles_df = pd.DataFrame(candles)
+        candles_df.index = pd.to_datetime(candles_df["timestamp"], unit='s')
+        missing_cols = [c for c in ("open", "high", "low", "close") if c not in candles_df.columns]
+        if missing_cols:
+            raise KeyError(f"response rows are missing expected column(s): {missing_cols}")
+    except Exception as e:
+        st.error(
+            f"Backend returned candle data in an unexpected shape for **{connector}** / **{trading_pair}** / "
+            f"**{interval}**: {type(e).__name__}: {e}\n\n"
+            f"{range_caption}\n\n"
+            f"First row received: `{candles[0] if candles else 'n/a'}`"
+        )
+        st.stop()
 
     # Plotting the candlestick chart
     fig = go.Figure(data=[go.Candlestick(
