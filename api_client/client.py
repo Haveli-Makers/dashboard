@@ -51,14 +51,9 @@ class HummingbotAPIClient:
     async def init(self) -> None:
         """Initialize the client session and routers."""
         if self._session is None:
-            connector = aiohttp.TCPConnector(
-                enable_cleanup_closed=True,
-                keepalive_timeout=15,
-            )
             self._session = aiohttp.ClientSession(
                 auth=self.auth,
-                timeout=self.timeout,
-                connector=connector,
+                timeout=self.timeout
             )
             self._accounts = AccountsRouter(self._session, self.base_url)
             self._archived_bots = ArchivedBotsRouter(self._session, self.base_url)
