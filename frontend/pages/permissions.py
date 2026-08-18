@@ -74,7 +74,15 @@ def private_pages():
                 icon="🗃️",
                 url_path="archived_bots"
             ),
-        ]
+        ],
+        "Scripts": [
+            st.Page(
+                "frontend/pages/scripts/app.py",
+                title="Workflows",
+                icon="📝",
+                url_path="scripts"
+            ),
+        ],
     }
 
 
