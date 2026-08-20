@@ -5,7 +5,7 @@ servers:
     username: "admin"
     password: "admin"
   - name: "Production"
-    host: "YOUR_SERVER_IP"
+    host: "18.61.155.140"
     port: 8000
-    username: "YOUR_USERNAME"
-    password: "YOUR_PASSWORD"
+    username: "mudit"
+    password: "MM@haveli"

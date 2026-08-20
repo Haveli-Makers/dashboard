@@ -84,9 +84,3 @@ def private_pages():
             ),
         ],
     }
-
-
-def pages_for_role(role: str):
-    if role.upper() == "ADMIN":
-        return private_pages()
-    return public_pages()

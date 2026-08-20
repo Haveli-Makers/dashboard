@@ -19,6 +19,9 @@ CERTIFIED_STRATEGIES = ["xemm", "cross exchange market making", "pmm", "pure mar
 
 AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "True").lower() in ("true", "1", "t")
 
+GOOGLE_SSO_ENABLED = os.getenv("GOOGLE_SSO_ENABLED", "True").lower() in ("true", "1", "t")
+GOOGLE_ALLOWED_DOMAIN = os.getenv("GOOGLE_ALLOWED_DOMAIN", "havelimakers.com")
+
 IMAGE_FILTER_KEYWORD = os.getenv("IMAGE_FILTER_KEYWORD", "haveli")
 
 BACKEND_API_HOST = os.getenv("BACKEND_API_HOST", "127.0.0.1")

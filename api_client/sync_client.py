@@ -49,7 +49,6 @@ class SyncHummingbotAPIClient:
         base_url: str = "http://localhost:8000",
         username: str = "admin",
         password: str = "admin",
-        access_token: Optional[str] = None,
         timeout: Optional[float] = None
     ):
         """Initialize the sync client with connection parameters.
@@ -58,13 +57,11 @@ class SyncHummingbotAPIClient:
             base_url: The base URL of the Hummingbot API
             username: The username for authentication
             password: The password for authentication
-            access_token: Optional bearer token for JWT authentication
             timeout: Optional timeout in seconds (defaults to 300 seconds)
         """
         self._base_url = base_url
         self._username = username
         self._password = password
-        self._access_token = access_token
         self._timeout = timeout
         self._async_client: Optional[HummingbotAPIClient] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -106,7 +103,6 @@ class SyncHummingbotAPIClient:
             self._base_url,
             self._username,
             self._password,
-            access_token=self._access_token,
             timeout=timeout_obj
         )
 
