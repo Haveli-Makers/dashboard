@@ -236,7 +236,6 @@ def _clear_google_auth_state():
 
 
 def auth_system():
-    render_server_selector()
     visible_sections = _get_selected_server().get('visible_sections')
     if not AUTH_SYSTEM_ENABLED:
         render_server_selector()
@@ -258,7 +257,7 @@ def auth_system():
         st.sidebar.write(f'Welcome *{st.session_state.get("name", st.session_state.get("username", "User"))}*')
         return {
             "Main": main_page(),
-            **private_pages(),
+            **private_pages(visible_sections),
             **public_pages(),
         }
 
