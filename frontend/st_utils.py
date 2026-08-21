@@ -5,12 +5,11 @@ from typing import Optional, Union
 
 import pandas as pd
 import streamlit as st
-import streamlit_authenticator as stauth
 import yaml
 from streamlit.commands.page_config import InitialSideBarState, Layout
 from yaml import SafeLoader
 
-from CONFIG import AUTH_SYSTEM_ENABLED
+from CONFIG import AUTH_SYSTEM_ENABLED, GOOGLE_ALLOWED_DOMAIN, GOOGLE_SSO_ENABLED
 from frontend.pages.permissions import main_page, private_pages, public_pages
 
 
@@ -139,6 +138,42 @@ def get_selected_server_config() -> dict:
     return _get_selected_server()
 
 
+def start_google_login():
+    st.session_state.pop("google_access_denied_email", None)
+    st.login("google")
+
+
+def _sync_google_login() -> bool:
+    """
+    Returns True once the session is authenticated via Google.
+    """
+    if not GOOGLE_SSO_ENABLED:
+        return False
+    try:
+        user = st.user
+    except Exception:
+        return False
+
+    if not getattr(user, "is_logged_in", False):
+        st.session_state.pop("google_access_denied_email", None)
+        return False
+
+    email = (user.email or "").lower()
+    if GOOGLE_ALLOWED_DOMAIN and not email.endswith(f"@{GOOGLE_ALLOWED_DOMAIN.lower()}"):
+        already_seen = st.session_state.get("google_access_denied_email") == email
+        st.session_state.google_access_denied_email = email
+        if already_seen:
+            st.logout()
+        return False
+
+    st.session_state.pop("google_access_denied_email", None)
+    st.session_state.authentication_status = True
+    st.session_state.login_method = "google"
+    st.session_state.username = email
+    st.session_state.name = user.name or email
+    return True
+
+
 def get_backend_api_client():
     import atexit
 
@@ -195,42 +230,38 @@ def get_backend_api_client():
     return st.session_state.backend_api_client
 
 
+def _clear_google_auth_state():
+    for key in ("authentication_status", "login_method", "username", "name"):
+        st.session_state.pop(key, None)
+
+
 def auth_system():
     render_server_selector()
     visible_sections = _get_selected_server().get('visible_sections')
     if not AUTH_SYSTEM_ENABLED:
+        render_server_selector()
         return {
             "Main": main_page(),
             **private_pages(visible_sections),
             **public_pages(),
         }
-    else:
-        with open('credentials.yml') as file:
-            config = yaml.load(file, Loader=SafeLoader)
-        if "authenticator" not in st.session_state or "authentication_status" not in st.session_state or not st.session_state.get(
-                "authentication_status", False):
-            st.session_state.authenticator = stauth.Authenticate(
-                config['credentials'],
-                config['cookie']['name'],
-                config['cookie']['key'],
-                config['cookie']['expiry_days'],
-            )
-            # Show only public pages for non-authenticated users
-            st.session_state.authenticator.login()
-            if st.session_state["authentication_status"] is False:
-                st.error('Username/password is incorrect')
-            elif st.session_state["authentication_status"] is None:
-                st.warning('Please enter your username and password')
-            return {
-                "Main": main_page(),
-                **public_pages()
-            }
-        else:
-            st.session_state.authenticator.logout(location="sidebar")
-            st.sidebar.write(f'Welcome *{st.session_state["name"]}*')
-            # Show all pages for authenticated users
-            return {
-                "Main": main_page(),
-                **private_pages(visible_sections),
-                **public_pages(),
-            }
+
+    _sync_google_login()
+
+    if st.session_state.get("authentication_status", False):
+        render_server_selector()
+        if st.sidebar.button("Logout"):
+            _clear_google_auth_state()
+            st.logout()
+            st.rerun()
+
+        st.sidebar.write(f'Welcome *{st.session_state.get("name", st.session_state.get("username", "User"))}*')
+        return {
+            "Main": main_page(),
+            **private_pages(),
+            **public_pages(),
+        }
+
+    return {
+        "Login": [st.Page("frontend/pages/login.py", title="Sign in", icon="🔒", url_path="login")],
+    }
