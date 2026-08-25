@@ -28,7 +28,7 @@ BACKEND_API_PASSWORD = os.getenv("BACKEND_API_PASSWORD", "admin")
 
 # SMTP settings used to email exported data (e.g. spread reports) as attachments
 SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_PORT = int(os.getenv("SMTP_PORT") or 587)
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ("true", "1", "t")
