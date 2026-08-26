@@ -13,5 +13,5 @@
 - pandas_ta
 - sqlalchemy
 - pyyaml
-- python-dotenv
 - openpyxl
+- python-dotenv
