@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta, timezone
 
+import aiohttp
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -12,9 +13,22 @@ backend_api_client = get_backend_api_client()
 
 c1, c2, c3, c4 = st.columns([2, 2, 2, 0.5])
 with c1:
-    connector = st.selectbox("Exchange",
-                             ["binance_perpetual", "binance", "gate_io", "gate_io_perpetual", "kucoin", "ascend_ex", "okx", "coindcx", "mexc","kraken"],
-                             index=0)
+    connector = st.selectbox(
+        "Exchange",
+        [
+            "binance_perpetual",
+            "binance",
+            "gate_io",
+            "gate_io_perpetual",
+            "kucoin",
+            "ascend_ex",
+            "okx",
+            "coindcx",
+            "mexc",
+            "kraken",
+        ],
+        index=0,
+    )
     trading_pair = st.text_input("Trading Pair", value="BTC-USDT")
 with c2:
     interval = st.selectbox("Interval", options=["1m", "3m", "5m", "15m", "1h", "4h", "1d", "1s"])
@@ -43,33 +57,49 @@ if get_data_button:
 
     start_ts = int(start_datetime.timestamp())
     end_ts = int(end_datetime.timestamp())
+    utc_start = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')
+    utc_end = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')
 
-    candles = backend_api_client.market_data.get_historical_candles(
-        connector_name=connector,
-        trading_pair=trading_pair,
-        interval=interval,
-        start_time=start_ts,
-        end_time=end_ts,
-    )
+    try:
+        candles = backend_api_client.market_data.get_historical_candles(
+            connector_name=connector,
+            trading_pair=trading_pair,
+            interval=interval,
+            start_time=start_ts,
+            end_time=end_ts,
+        )
+    except aiohttp.ClientResponseError as e:
+        st.error(
+            f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {e.message or e.status}\n\n"
+            f"Requested UTC range: `{utc_start}` -> `{utc_end}`\n\n"
+            "Tip: Try a shorter date range."
+        )
+        st.stop()
+    except Exception as e:
+        st.error(
+            f"Failed to download candles for **{connector}** / **{trading_pair}** / **{interval}**: {e}\n\n"
+            f"Requested UTC range: `{utc_start}` -> `{utc_end}`"
+        )
+        st.stop()
+
+    def show_backend_error(err):
+        st.error(
+            f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {err}\n\n"
+            f"Requested UTC range: `{utc_start}` -> `{utc_end}`\n\n"
+            "Tip: Try a shorter date range."
+        )
+        st.stop()
 
     if isinstance(candles, dict):
         if candles.get("status") == "success":
             candles = candles.get("data", [])
+        elif "error" in candles:
+            show_backend_error(str(candles["error"]))
         elif "data" in candles:
             candles = candles["data"]
-        elif "error" in candles:
-            err = str(candles["error"])
-            st.error(
-                f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {err}\n\n"
-                f"Requested UTC range: `{datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}` → "
-                f"`{datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}`\n\n"
-                "Tip: Try a shorter date range."
-            )
-            st.stop()
         else:
             st.error(f"Unexpected response from server: {candles}")
             st.stop()
-
     if not candles:
         st.warning("No candle data returned for the selected parameters.")
         st.stop()
