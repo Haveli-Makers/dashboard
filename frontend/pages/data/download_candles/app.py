@@ -44,11 +44,42 @@ if get_data_button:
 
     start_ts = int(start_datetime.timestamp())
     end_ts = int(end_datetime.timestamp())
+    utc_start = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')
+    utc_end = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')
 
     range_caption = (
         f"Requested UTC range: `{datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}` → "
         f"`{datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
     )
+    try:
+        candles = backend_api_client.market_data.get_historical_candles(
+            connector_name=connector,
+            trading_pair=trading_pair,
+            interval=interval,
+            start_time=start_ts,
+            end_time=end_ts,
+        )
+    except aiohttp.ClientResponseError as e:
+        st.error(
+            f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {e.message or e.status}\n\n"
+            f"Requested UTC range: `{utc_start}` -> `{utc_end}`\n\n"
+            "Tip: Try a shorter date range."
+        )
+        st.stop()
+    except Exception as e:
+        st.error(
+            f"Failed to download candles for **{connector}** / **{trading_pair}** / **{interval}**: {e}\n\n"
+            f"Requested UTC range: `{utc_start}` -> `{utc_end}`"
+        )
+        st.stop()
+
+    def show_backend_error(err):
+        st.error(
+            f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {err}\n\n"
+            f"Requested UTC range: `{utc_start}` -> `{utc_end}`\n\n"
+            "Tip: Try a shorter date range."
+        )
+        st.stop()
 
     try:
         candles = backend_api_client.market_data.get_historical_candles(
@@ -88,6 +119,8 @@ if get_data_button:
     if isinstance(candles, dict):
         if candles.get("status") == "success":
             candles = candles.get("data", [])
+        elif "error" in candles:
+            show_backend_error(str(candles["error"]))
         elif "data" in candles:
             candles = candles["data"]
         elif "error" in candles:
@@ -101,7 +134,6 @@ if get_data_button:
         else:
             st.error(f"Unexpected response from server: {candles}")
             st.stop()
-
     if not candles:
         st.warning("No candle data returned for the selected parameters.")
         st.stop()
