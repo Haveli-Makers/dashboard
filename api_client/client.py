@@ -53,7 +53,7 @@ class HummingbotAPIClient:
         if self._session is None:
             self._session = aiohttp.ClientSession(
                 auth=self.auth,
-                timeout=self.timeout,
+                timeout=self.timeout
             )
             self._accounts = AccountsRouter(self._session, self.base_url)
             self._archived_bots = ArchivedBotsRouter(self._session, self.base_url)
