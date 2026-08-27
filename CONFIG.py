@@ -17,7 +17,10 @@ DEFAULT_MINER_COINS = ["Avalanche"]
 CERTIFIED_EXCHANGES = ["ascendex", "binance", "bybit", "gate.io", "hitbtc", "huobi", "kucoin", "okx", "gateway"]
 CERTIFIED_STRATEGIES = ["xemm", "cross exchange market making", "pmm", "pure market making"]
 
-AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "False").lower() in ("true", "1", "t")
+AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "True").lower() in ("true", "1", "t")
+
+GOOGLE_SSO_ENABLED = os.getenv("GOOGLE_SSO_ENABLED", "True").lower() in ("true", "1", "t")
+GOOGLE_ALLOWED_DOMAIN = os.getenv("GOOGLE_ALLOWED_DOMAIN", "havelimakers.com")
 
 IMAGE_FILTER_KEYWORD = os.getenv("IMAGE_FILTER_KEYWORD", "haveli")
 
