@@ -1,17 +1,19 @@
 import inspect
+import json
 import os.path
 from pathlib import Path
 from typing import Optional, Union
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
-import streamlit_authenticator as stauth
 import yaml
 from streamlit.commands.page_config import InitialSideBarState, Layout
 from yaml import SafeLoader
 
 from CONFIG import AUTH_SYSTEM_ENABLED
-from frontend.pages.permissions import main_page, private_pages, public_pages
+from frontend.pages.permissions import main_page, pages_for_role, private_pages, public_pages
 
 
 def initialize_st_page(title: Optional[str] = None, icon: str = "🤖", layout: Layout = 'wide',
@@ -111,6 +113,7 @@ def render_server_selector():
             except Exception:
                 pass
             st.session_state.backend_api_client = None
+        clear_backend_auth_state()
         st.session_state.selected_server_name = st.session_state._server_selector
         st.cache_data.clear()
 
@@ -139,31 +142,71 @@ def get_selected_server_config() -> dict:
     return _get_selected_server()
 
 
+def _build_base_url(server: dict) -> str:
+    host = server.get('host', '127.0.0.1')
+    port = server.get('port', 8000)
+    if not str(host).startswith(('http://', 'https://')):
+        return f"http://{host}:{port}"
+    return f"{host}:{port}"
+
+
+def clear_backend_auth_state():
+    for key in (
+        "authentication_status",
+        "backend_access_token",
+        "backend_token_type",
+        "backend_token_expires_in",
+        "user_role",
+        "username",
+        "name",
+    ):
+        st.session_state.pop(key, None)
+
+
+def login_with_backend(username: str, password: str) -> dict:
+    server = _get_selected_server()
+    login_url = f"{_build_base_url(server)}/auth/token"
+    payload = json.dumps({"username": username, "password": password}).encode("utf-8")
+    request = Request(
+        login_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code == 401:
+            raise ValueError("Username/password is incorrect") from exc
+        raise ValueError(f"Backend login failed with status {exc.code}") from exc
+    except URLError as exc:
+        raise ValueError(f"Could not connect to backend: {exc.reason}") from exc
+
+
 def get_backend_api_client():
     import atexit
 
     from api_client.sync_client import SyncHummingbotAPIClient
 
     server = _get_selected_server()
-    host = server.get('host', '127.0.0.1')
-    port = server.get('port', 8000)
     username = server.get('username', 'admin')
     password = server.get('password', 'admin')
+    access_token = st.session_state.get("backend_access_token")
 
     # Use Streamlit session state to store singleton instance
     if 'backend_api_client' not in st.session_state or st.session_state.backend_api_client is None:
         try:
             # Create and enter the client context
             # Ensure URL has proper protocol
-            if not str(host).startswith(('http://', 'https://')):
-                base_url = f"http://{host}:{port}"
-            else:
-                base_url = f"{host}:{port}"
+            base_url = _build_base_url(server)
 
             client = SyncHummingbotAPIClient(
                 base_url=base_url,
                 username=username,
-                password=password
+                password=password,
+                access_token=access_token,
             )
             # Initialize the client using context manager
             client.__enter__()
@@ -203,33 +246,50 @@ def auth_system():
             **private_pages(),
             **public_pages(),
         }
-    else:
-        with open('credentials.yml') as file:
-            config = yaml.load(file, Loader=SafeLoader)
-        if "authenticator" not in st.session_state or "authentication_status" not in st.session_state or not st.session_state.get(
-                "authentication_status", False):
-            st.session_state.authenticator = stauth.Authenticate(
-                config['credentials'],
-                config['cookie']['name'],
-                config['cookie']['key'],
-                config['cookie']['expiry_days'],
-            )
-            # Show only public pages for non-authenticated users
-            st.session_state.authenticator.login()
-            if st.session_state["authentication_status"] is False:
-                st.error('Username/password is incorrect')
-            elif st.session_state["authentication_status"] is None:
-                st.warning('Please enter your username and password')
-            return {
-                "Main": main_page(),
-                **public_pages()
-            }
-        else:
-            st.session_state.authenticator.logout(location="sidebar")
-            st.sidebar.write(f'Welcome *{st.session_state["name"]}*')
-            # Show all pages for authenticated users
-            return {
-                "Main": main_page(),
-                **private_pages(),
-                **public_pages(),
-            }
+
+    if st.session_state.get("authentication_status", False):
+        if st.sidebar.button("Logout"):
+            if st.session_state.get("backend_api_client") is not None:
+                try:
+                    st.session_state.backend_api_client.__exit__(None, None, None)
+                except Exception:
+                    pass
+                st.session_state.backend_api_client = None
+            clear_backend_auth_state()
+            st.rerun()
+
+        role = st.session_state.get("user_role", "USER")
+        st.sidebar.write(f'Welcome *{st.session_state.get("name", st.session_state.get("username", "User"))}*')
+        st.sidebar.caption(f"Role: {role}")
+        return {
+            "Main": main_page(),
+            **pages_for_role(role),
+            **public_pages(),
+        }
+
+    with st.form("backend_login_form"):
+        st.subheader("Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+
+    if submitted:
+        try:
+            token_response = login_with_backend(username, password)
+            role = token_response.get("role", "USER")
+            st.session_state.authentication_status = True
+            st.session_state.backend_access_token = token_response["access_token"]
+            st.session_state.backend_token_type = token_response.get("token_type", "bearer")
+            st.session_state.backend_token_expires_in = token_response.get("expires_in")
+            st.session_state.user_role = role
+            st.session_state.username = username
+            st.session_state.name = username
+            st.rerun()
+        except ValueError as exc:
+            st.session_state.authentication_status = False
+            st.error(str(exc))
+
+    return {
+        "Main": main_page(),
+        **public_pages()
+    }
