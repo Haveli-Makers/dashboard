@@ -247,9 +247,10 @@ def schedules_to_overview_df(schedules):
             }
         )
     df = pd.DataFrame(rows)
+    local_tz = datetime.now().astimezone().tzinfo
     for col in ("Next run", "Last run"):
         if col in df.columns and not df.empty:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True).dt.tz_convert(local_tz)
             df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S").where(df[col].notna(), "—")
     return df
 
