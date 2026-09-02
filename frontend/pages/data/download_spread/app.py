@@ -18,6 +18,7 @@ from frontend.email_utils import (
     render_template,
     send_email_with_xlsx,
 )
+from api_client.audit import audit_logged
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 SUPPORTED_EXCHANGES = [
@@ -93,7 +94,7 @@ if get_data_button:
         try:
             pairs_list = [p.strip() for p in trading_pairs.split(",") if p.strip()]
 
-            with st.spinner("Fetching spread data..."):
+            with st.spinner("Fetching spread data..."), audit_logged():
                 spread_response = backend_api_client.market_data.get_spread_averages(
                     pairs=pairs_list,
                     connectors=connectors,
@@ -114,7 +115,7 @@ if get_data_button:
 
             volume_records = []
             failed_pairs = []
-            with st.spinner("Fetching volume data..."):
+            with st.spinner("Fetching volume data..."), audit_logged():
                 for connector in connectors:
                     volume_pairs_list = pairs_list if pairs_list else volume_pairs_by_connector.get(connector, [])
                     if not volume_pairs_list:
@@ -362,7 +363,7 @@ if "download_spread__spread_df" in st.session_state:
                 label_visibility="collapsed"
             )
 
-        with st.spinner("Fetching samples..."):
+        with st.spinner("Fetching samples..."), audit_logged():
             all_samples = []
             samples_errors = []
             for _, row in selected_pairs_df.iterrows():

@@ -26,12 +26,14 @@ class HummingbotAPIClient:
         base_url: str = "http://localhost:8000",
         username: str = "admin",
         password: str = "admin",
-        timeout: Optional[aiohttp.ClientTimeout] = None
+        timeout: Optional[aiohttp.ClientTimeout] = None,
+        user_email: Optional[str] = None,
     ):
         self.base_url = base_url.rstrip('/')
         self.auth = aiohttp.BasicAuth(username, password)
         # Increase default timeout for operations like historical candles
         self.timeout = timeout or aiohttp.ClientTimeout(total=300)  # 5 minutes
+        self._default_headers = {"X-User-Email": user_email} if user_email else {}
         self._session: Optional[aiohttp.ClientSession] = None
         self._accounts: Optional[AccountsRouter] = None
         self._archived_bots: Optional[ArchivedBotsRouter] = None
@@ -53,7 +55,8 @@ class HummingbotAPIClient:
         if self._session is None:
             self._session = aiohttp.ClientSession(
                 auth=self.auth,
-                timeout=self.timeout
+                timeout=self.timeout,
+                headers=self._default_headers,
             )
             self._accounts = AccountsRouter(self._session, self.base_url)
             self._archived_bots = ArchivedBotsRouter(self._session, self.base_url)

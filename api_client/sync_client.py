@@ -49,7 +49,8 @@ class SyncHummingbotAPIClient:
         base_url: str = "http://localhost:8000",
         username: str = "admin",
         password: str = "admin",
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
+        user_email: Optional[str] = None,
     ):
         """Initialize the sync client with connection parameters.
 
@@ -58,11 +59,14 @@ class SyncHummingbotAPIClient:
             username: The username for authentication
             password: The password for authentication
             timeout: Optional timeout in seconds (defaults to 300 seconds)
+            user_email: Signed-in user's email, sent as X-User-Email for the
+                backend's audit log (see api_client/client.py).
         """
         self._base_url = base_url
         self._username = username
         self._password = password
         self._timeout = timeout
+        self._user_email = user_email
         self._async_client: Optional[HummingbotAPIClient] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._created_loop: bool = False
@@ -103,7 +107,8 @@ class SyncHummingbotAPIClient:
             self._base_url,
             self._username,
             self._password,
-            timeout=timeout_obj
+            timeout=timeout_obj,
+            user_email=self._user_email,
         )
 
         # Initialize based on whether we created the loop
