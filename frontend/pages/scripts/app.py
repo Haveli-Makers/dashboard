@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from api_client.audit import audit_logged
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 
@@ -48,21 +49,22 @@ def get_config_names(configs):
 
 
 def get_script_config_template(script_name):
-    try:
-        template_response = backend_api_client.scripts.run_script({"script_name": script_name, "config": {}})
-        if isinstance(template_response, dict) and template_response.get("status") == "requires_config":
-            return template_response.get("config", {})
-    except Exception as exc:
-        st.warning(f"Failed to fetch config template from /scripts/run for {script_name}: {exc}")
+    with audit_logged(False):
+        try:
+            template_response = backend_api_client.scripts.run_script({"script_name": script_name, "config": {}})
+            if isinstance(template_response, dict) and template_response.get("status") == "requires_config":
+                return template_response.get("config", {})
+        except Exception as exc:
+            st.warning(f"Failed to fetch config template from /scripts/run for {script_name}: {exc}")
 
-    try:
-        template = backend_api_client.scripts.get_script_config_template(script_name)
-        if isinstance(template, dict) and template.get("status") == "requires_config":
-            return template.get("config", {})
-        return template if isinstance(template, dict) else {}
-    except Exception as exc:
-        st.warning(f"Failed to fetch config template for {script_name}: {exc}")
-        return {}
+        try:
+            template = backend_api_client.scripts.get_script_config_template(script_name)
+            if isinstance(template, dict) and template.get("status") == "requires_config":
+                return template.get("config", {})
+            return template if isinstance(template, dict) else {}
+        except Exception as exc:
+            st.warning(f"Failed to fetch config template for {script_name}: {exc}")
+            return {}
 
 
 def build_config_from_template(template):
@@ -322,7 +324,8 @@ with scheduled_tab:
                     st.info("This schedule has no editable config file.")
                 else:
                     try:
-                        current_config = backend_api_client.scripts.get_script_config(config_name)
+                        with audit_logged():
+                            current_config = backend_api_client.scripts.get_script_config(config_name)
                     except Exception as exc:
                         st.error(f"Failed to load config: {exc}")
                         current_config = {}
@@ -351,7 +354,8 @@ with scheduled_tab:
             expanded=st.session_state.scripts_history_expanded,
         ):
             try:
-                history = backend_api_client.scripts.get_script_schedule_history(selected_schedule_id, limit=50)
+                with audit_logged():
+                    history = backend_api_client.scripts.get_script_schedule_history(selected_schedule_id, limit=50)
                 runs = history.get("runs", [])
             except Exception as exc:
                 st.error(f"Failed to fetch history: {exc}")

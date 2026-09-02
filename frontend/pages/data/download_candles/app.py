@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from api_client.audit import audit_logged
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 # Initialize Streamlit page
@@ -31,13 +32,14 @@ if get_data_button:
         st.error("End Date should be greater than Start Date.")
         st.stop()
 
-    candles = backend_api_client.market_data.get_historical_candles(
-        connector_name=connector,
-        trading_pair=trading_pair,
-        interval=interval,
-        start_time=int(start_datetime.timestamp()),
-        end_time=int(end_datetime.timestamp())
-    )
+    with audit_logged():
+        candles = backend_api_client.market_data.get_historical_candles(
+            connector_name=connector,
+            trading_pair=trading_pair,
+            interval=interval,
+            start_time=int(start_datetime.timestamp()),
+            end_time=int(end_datetime.timestamp())
+        )
 
     candles_df = pd.DataFrame(candles)
     candles_df.index = pd.to_datetime(candles_df["timestamp"], unit='s')
