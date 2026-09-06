@@ -36,7 +36,6 @@ def render_template(template: str, context: dict) -> str:
 def build_spread_email_context(
     connectors: list[str],
     pairs: list[str],
-    window_hours,
     row_count: int,
     failed_count: int,
 ) -> dict:
@@ -45,7 +44,6 @@ def build_spread_email_context(
     return {
         "connectors": ", ".join(connectors) if connectors else "-",
         "pairs": ", ".join(pairs) if pairs else "All Pairs",
-        "window_hours": window_hours,
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
         "row_count": row_count,

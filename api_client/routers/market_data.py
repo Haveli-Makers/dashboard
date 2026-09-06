@@ -389,15 +389,15 @@ class MarketDataRouter(BaseRouter):
         self,
         pairs: Union[str, List[str]],
         connectors: Union[str, List[str]],
-        window_hours: int = 24
     ) -> Dict[str, Any]:
         """
         Get average spread data for specified trading pairs and connectors.
 
+        Averages are computed over all recorded history.
+
         Args:
             pairs: Single trading pair or list of trading pairs (e.g., "BTC-USDT" or ["BTC-USDT", "ETH-USDT"])
             connectors: Single connector or list of connectors (e.g., "binance" or ["binance", "coinbase"])
-            window_hours: Time window in hours for spread calculation (default: 24)
 
         Returns:
             Average spread statistics for each trading pair and connector combination
@@ -407,14 +407,12 @@ class MarketDataRouter(BaseRouter):
             spread = await client.market_data.get_spread_averages(
                 pairs="BTC-USDT",
                 connectors="binance",
-                window_hours=24
             )
 
             # Get spread for multiple pairs and connectors
             spread = await client.market_data.get_spread_averages(
                 pairs=["BTC-USDT", "ETH-USDT"],
                 connectors=["binance", "coinbase"],
-                window_hours=12
             )
         """
         # Convert single values to lists for consistency
@@ -426,7 +424,6 @@ class MarketDataRouter(BaseRouter):
         request = {
             "pairs": pairs,
             "connectors": connectors,
-            "window_hours": window_hours
         }
         return await self._post("/market-data/spread-averages", json=request)
 

@@ -44,7 +44,6 @@ SPREAD_EMAIL_BODY_TEMPLATE = os.getenv(
     "Please find attached the spread data report generated on {date} at {time}.\n\n"
     "Exchanges: {connectors}\n"
     "Trading Pairs: {pairs}\n"
-    "Time Window: {window_hours} hours\n"
     "Rows: {row_count}\n"
     "Failed/Missing Pairs: {failed_count}\n\n"
     "Regards,\n"
