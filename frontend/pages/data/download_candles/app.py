@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from api_client.audit import audit_logged
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 # Initialize Streamlit page

@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from api_client.audit import audit_logged
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 # Enable nested async
@@ -894,7 +895,7 @@ with col1:
 
 with col2:
     if st.button("🔄 Refresh", use_container_width=True):
-        with st.spinner("Refreshing..."):
+        with st.spinner("Refreshing..."), audit_logged():
             load_databases()
             load_all_databases_status()
             load_bot_runs()
@@ -926,7 +927,7 @@ if st.session_state.selected_database:
     
     # Handle Load Dashboard button click
     if load_dashboard_btn:
-        with st.spinner("Loading comprehensive dashboard..."):
+        with st.spinner("Loading comprehensive dashboard..."), audit_logged():
             try:
                 # Load all necessary data
                 load_database_performance(db_path)
