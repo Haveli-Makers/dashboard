@@ -2,6 +2,8 @@ from typing import Optional
 
 import aiohttp
 
+from ..audit import audit_headers
+
 
 class BaseRouter:
     def __init__(self, session: aiohttp.ClientSession, base_url: str):
@@ -11,7 +13,7 @@ class BaseRouter:
     async def _get(self, path: str, params: Optional[dict] = None):
         """Perform a GET request and return JSON response."""
         url = f"{self.base_url}/{path.lstrip('/')}"
-        async with self.session.get(url, params=params) as response:
+        async with self.session.get(url, params=params, headers=audit_headers()) as response:
             if not response.ok:
                 try:
                     error_detail = await response.json()
@@ -61,7 +63,7 @@ class BaseRouter:
     async def _post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None) -> dict:
         """Perform a POST request and return JSON response."""
         url = f"{self.base_url}/{path.lstrip('/')}"
-        async with self.session.post(url, json=json, params=params) as response:
+        async with self.session.post(url, json=json, params=params, headers=audit_headers()) as response:
             if not response.ok:
                 try:
                     error_detail = await response.json()
@@ -112,7 +114,7 @@ class BaseRouter:
     async def _delete(self, path: str, params: Optional[dict] = None) -> dict:
         """Perform a DELETE request and return JSON response."""
         url = f"{self.base_url}/{path.lstrip('/')}"
-        async with self.session.delete(url, params=params) as response:
+        async with self.session.delete(url, params=params, headers=audit_headers()) as response:
             if not response.ok:
                 try:
                     error_detail = await response.json()

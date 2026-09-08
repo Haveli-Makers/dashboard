@@ -163,7 +163,8 @@ def get_backend_api_client():
             client = SyncHummingbotAPIClient(
                 base_url=base_url,
                 username=username,
-                password=password
+                password=password,
+                user_email=st.session_state.get("username"),
             )
             # Initialize the client using context manager
             client.__enter__()
