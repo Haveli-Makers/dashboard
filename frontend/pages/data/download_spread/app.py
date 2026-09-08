@@ -1,9 +1,13 @@
+import asyncio
 import datetime
 import re
+import threading
 import traceback
 
 import pandas as pd
 import streamlit as st
+
+from api_client.client import HummingbotAPIClient
 
 from frontend.email_utils import (
     SAMPLES_EMAIL_BODY_TEMPLATE,
@@ -63,6 +67,76 @@ def _sample_limit_for_row(sample_count_option):
     if sample_count_option != "All":
         return int(sample_count_option)
     return MAX_SAMPLE_LIMIT
+
+
+def _fetch_spread_samples_bulk(client, requests, include_total_count=False):
+    """Fetch raw spread samples for many (connector, pair) at once.
+
+    Runs on one dedicated thread with a single short-lived async client so it
+    never shares the cached ``SyncHummingbotAPIClient``'s event loop (which
+    breaks on widget-triggered Streamlit reruns), and issues all pair requests
+    concurrently instead of one blocking call each.
+
+    ``requests``: iterable of ``(connector, pair, limit)``.
+    Returns ``{(connector, pair): response_dict | Exception}``.
+    """
+    base_url = getattr(client, "_base_url", "http://localhost:8000")
+    username = getattr(client, "_username", "admin")
+    password = getattr(client, "_password", "admin")
+    reqs = list(requests)
+    box = {}
+
+    def _worker():
+        async def _run():
+            api = HummingbotAPIClient(base_url, username, password)
+            await api.init()
+            try:
+                async def _one(connector, pair, limit):
+                    try:
+                        resp = await api.market_data.get_spread_data(
+                            pair=pair,
+                            connector=connector,
+                            limit=limit,
+                            include_total_count=include_total_count,
+                        )
+                        return (connector, pair), resp
+                    except Exception as exc:
+                        return (connector, pair), exc
+
+                pairs = await asyncio.gather(*(_one(c, p, lim) for c, p, lim in reqs))
+                return dict(pairs)
+            finally:
+                await api.close()
+
+        try:
+            box["result"] = asyncio.run(_run())
+        except Exception as exc:  # surfaced to the caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_worker, name="spread-samples-fetch", daemon=True)
+    worker.start()
+    worker.join()
+
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _build_sample_downloads(samples_df, sheet_specs):
+    """Build the CSV + XLSX bytes for the samples table.
+
+    Cached so the (multi-second for tens of thousands of rows) XLSX build runs
+    once per unique selection instead of on every rerun.
+    """
+    csv_bytes = samples_df.to_csv(index=False)
+    sheets = {
+        name: samples_df[
+            (samples_df["connector"] == conn) & (samples_df["pair"] == pair)
+        ].reset_index(drop=True)
+        for name, conn, pair in sheet_specs
+    }
+    return csv_bytes, dataframes_to_xlsx_bytes(sheets)
 
 
 # Initialize Streamlit page
@@ -331,7 +405,7 @@ if "download_spread__spread_df" in st.session_state:
                 except Exception as email_err:
                     st.error(f"Failed to send email: {str(email_err)}")
 
-    st.caption("Select one or more rows to view all samples for those trading pairs in a single table.")
+    st.caption("Tick one or more rows, choose how many spreads, then click **Fetch Samples**.")
 
     selection = st.dataframe(
         display_df,
@@ -343,13 +417,15 @@ if "download_spread__spread_df" in st.session_state:
 
     selected_rows = selection.selection.rows if selection.selection else []
     selected_rows = [row for row in selected_rows if row < len(spread_df)]
-    if selected_rows:
+    if not selected_rows:
+        st.session_state.pop("download_spread__samples", None)
+    else:
         selected_pairs_df = spread_df.iloc[selected_rows].reset_index(drop=True)
         selected_keys = "_".join(
             f"{r['connector']}-{r['pair']}" for _, r in selected_pairs_df.iterrows()
         )
 
-        col1, col2 = st.columns([8, 1])
+        col1, col2, col3 = st.columns([6, 1.3, 1.3], vertical_alignment="bottom")
         with col1:
             st.subheader("Samples for the selected Pairs")
         with col2:
@@ -357,44 +433,98 @@ if "download_spread__spread_df" in st.session_state:
                 "Number of spreads",
                 options=["All", "10", "100", "200", "500", "1000"],
                 index=0,  # Default to All
-                key=f"spread_sample_count_{selected_keys}",
-                label_visibility="collapsed"
+                key="spread_sample_count",
+                label_visibility="collapsed",
+            )
+        with col3:
+            fetch_samples_clicked = st.button(
+                "Fetch Samples", use_container_width=True, key="fetch_samples_btn"
             )
 
-        with st.spinner("Fetching samples..."):
-            all_samples = []
-            samples_errors = []
-            total_available = 0
-            for _, row in selected_pairs_df.iterrows():
-                selected_pair = row["pair"]
-                selected_connector = row["connector"]
-                sample_limit = _sample_limit_for_row(sample_count_option)
+        if fetch_samples_clicked:
+            sample_limit = _sample_limit_for_row(sample_count_option)
+            want_total = sample_count_option == "All"
+            fetch_requests = [
+                (row["connector"], row["pair"], sample_limit)
+                for _, row in selected_pairs_df.iterrows()
+            ]
 
+            with st.spinner("Fetching samples..."):
                 try:
-                    samples_response = backend_api_client.market_data.get_spread_data(
-                        pair=selected_pair,
-                        connector=selected_connector,
-                        limit=sample_limit,
-                        include_total_count=(sample_count_option == "All"),
+                    bulk_samples = _fetch_spread_samples_bulk(
+                        backend_api_client, fetch_requests, include_total_count=want_total
                     )
-                    total_available += int(samples_response.get("total_count") or 0) if samples_response else 0
-                    if samples_response and samples_response.get("data"):
-                        pair_samples_df = pd.DataFrame(samples_response["data"])
-                        pair_samples_df["connector"] = selected_connector
-                        pair_samples_df["pair"] = selected_pair
-                        other_cols = [c for c in pair_samples_df.columns if c not in ("connector", "pair")]
-                        pair_samples_df = pair_samples_df[["connector", "pair"] + other_cols]
-                        all_samples.append(_format_timestamp_column(pair_samples_df))
-                    else:
-                        samples_errors.append(f"No raw samples found for {selected_pair} on {selected_connector}.")
-                except Exception as samples_err:
-                    samples_errors.append(f"Failed to fetch samples for {selected_pair} on {selected_connector}: {str(samples_err)}")
+                except Exception as bulk_err:  # noqa: BLE001
+                    bulk_samples = {(c, p): bulk_err for c, p, _lim in fetch_requests}
 
+            fetched_frames = []
+            fetch_errors = []
+            fetched_total = 0
+            for f_connector, f_pair, _lim in fetch_requests:
+                resp = bulk_samples.get((f_connector, f_pair))
+                if isinstance(resp, Exception):
+                    fetch_errors.append(
+                        f"Failed to fetch samples for {f_pair} on {f_connector}: {resp}"
+                    )
+                    continue
+                fetched_total += int(resp.get("total_count") or 0) if resp else 0
+                if resp and resp.get("data"):
+                    pair_samples_df = pd.DataFrame(resp["data"])
+                    pair_samples_df["connector"] = f_connector
+                    pair_samples_df["pair"] = f_pair
+                    other_cols = [c for c in pair_samples_df.columns if c not in ("connector", "pair")]
+                    pair_samples_df = pair_samples_df[["connector", "pair"] + other_cols]
+                    fetched_frames.append(_format_timestamp_column(pair_samples_df))
+                else:
+                    fetch_errors.append(f"No raw samples found for {f_pair} on {f_connector}.")
+
+            sheet_specs = []
+            used_sheet_names = set()
+            for pair_samples_df in fetched_frames:
+                pair_connector = pair_samples_df["connector"].iloc[0]
+                pair_name = pair_samples_df["pair"].iloc[0]
+                sheet_name = re.sub(r"[\[\]:*?/\\]", "_", f"{pair_connector}_{pair_name}")[:31]
+                base_name, suffix = sheet_name, 2
+                while sheet_name in used_sheet_names:
+                    sheet_name = f"{base_name[:28]}_{suffix}"
+                    suffix += 1
+                used_sheet_names.add(sheet_name)
+                sheet_specs.append((sheet_name, pair_connector, pair_name))
+
+            st.session_state["download_spread__samples"] = {
+                "keys": selected_keys,
+                "sample_count_option": sample_count_option,
+                "samples_df": (
+                    pd.concat(fetched_frames, ignore_index=True) if fetched_frames else None
+                ),
+                "selected_pairs_df": selected_pairs_df,
+                "total_available": fetched_total,
+                "errors": fetch_errors,
+                "sheet_specs": tuple(sheet_specs),
+                "window_hours_used": window_hours_used,
+            }
+
+        cached_samples = st.session_state.get("download_spread__samples")
+        selection_matches = (
+            bool(cached_samples)
+            and cached_samples.get("keys") == selected_keys
+            and cached_samples.get("sample_count_option") == sample_count_option
+        )
+        if not selection_matches:
+            st.info("Click ***Fetch Samples*** to load samples for the current selection.")
+
+        samples_errors = cached_samples["errors"] if selection_matches else []
         if samples_errors:
             st.warning("\n\n".join(samples_errors))
 
-        if all_samples:
-            samples_df = pd.concat(all_samples, ignore_index=True)
+        samples_df = cached_samples["samples_df"] if selection_matches else None
+
+        if samples_df is not None and not samples_df.empty:
+            selected_pairs_df = cached_samples["selected_pairs_df"]
+            sample_count_option = cached_samples["sample_count_option"]
+            total_available = cached_samples["total_available"]
+            sheet_specs = cached_samples["sheet_specs"]
+            window_hours_used = cached_samples["window_hours_used"]
 
             samples_header_col, samples_download_col, samples_email_col = st.columns([6, 1, 1])
             with samples_header_col:
@@ -405,7 +535,12 @@ if "download_spread__spread_df" in st.session_state:
                 else:
                     st.caption(f"Showing {len(samples_df)} samples across {len(selected_pairs_df)} pair(s)")
 
-            samples_csv = samples_df.to_csv(index=False)
+            st.dataframe(
+                samples_df,
+                use_container_width=True,
+                key=f"spread_samples_table_{cached_samples['keys']}_{sample_count_option}",
+            )
+
             selected_connectors_str = "_".join(
                 _safe_filename_part(c) for c in sorted(selected_pairs_df["connector"].unique().tolist())
             )
@@ -414,20 +549,7 @@ if "download_spread__spread_df" in st.session_state:
             )
             samples_xlsx_filename = f"samples_{selected_connectors_str}_{selected_pairs_str}_{window_hours_used}h.xlsx"
 
-            samples_sheets = {}
-            used_sheet_names = set()
-            for pair_samples_df in all_samples:
-                pair_connector = pair_samples_df["connector"].iloc[0]
-                pair_name = pair_samples_df["pair"].iloc[0]
-                raw_name = f"{pair_connector}_{pair_name}"
-                sheet_name = re.sub(r"[\[\]:*?/\\]", "_", raw_name)[:31]
-                base_name, suffix = sheet_name, 2
-                while sheet_name in used_sheet_names:
-                    sheet_name = f"{base_name[:28]}_{suffix}"
-                    suffix += 1
-                used_sheet_names.add(sheet_name)
-                samples_sheets[sheet_name] = pair_samples_df
-            samples_xlsx = dataframes_to_xlsx_bytes(samples_sheets)
+            samples_csv, samples_xlsx = _build_sample_downloads(samples_df, sheet_specs)
 
             with samples_download_col:
                 with st.popover("⬇️", use_container_width=True):
@@ -485,9 +607,3 @@ if "download_spread__spread_df" in st.session_state:
                                 st.success(f"Email sent to {', '.join(samples_recipients)}")
                         except Exception as samples_email_err:
                             st.error(f"Failed to send email: {str(samples_email_err)}")
-
-            st.dataframe(
-                samples_df,
-                use_container_width=True,
-                key=f"spread_samples_table_{selected_keys}_{sample_count_option}",
-            )
