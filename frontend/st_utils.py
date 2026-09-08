@@ -197,10 +197,11 @@ def get_backend_api_client():
 
 def auth_system():
     render_server_selector()
+    visible_sections = _get_selected_server().get('visible_sections')
     if not AUTH_SYSTEM_ENABLED:
         return {
             "Main": main_page(),
-            **private_pages(),
+            **private_pages(visible_sections),
             **public_pages(),
         }
     else:
@@ -230,6 +231,6 @@ def auth_system():
             # Show all pages for authenticated users
             return {
                 "Main": main_page(),
-                **private_pages(),
+                **private_pages(visible_sections),
                 **public_pages(),
             }
