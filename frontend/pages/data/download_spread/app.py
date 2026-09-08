@@ -56,14 +56,13 @@ def _format_timestamp_column(df):
     return formatted_df
 
 
-def _sample_limit_for_row(row, sample_count_option):
+MAX_SAMPLE_LIMIT = 10000
+
+
+def _sample_limit_for_row(sample_count_option):
     if sample_count_option != "All":
         return int(sample_count_option)
-
-    sample_count = pd.to_numeric(row.get("sample_count"), errors="coerce")
-    if pd.notna(sample_count) and sample_count > 0:
-        return int(sample_count)
-    return 100000
+    return MAX_SAMPLE_LIMIT
 
 
 # Initialize Streamlit page
@@ -365,17 +364,20 @@ if "download_spread__spread_df" in st.session_state:
         with st.spinner("Fetching samples..."):
             all_samples = []
             samples_errors = []
+            total_available = 0
             for _, row in selected_pairs_df.iterrows():
                 selected_pair = row["pair"]
                 selected_connector = row["connector"]
-                sample_limit = _sample_limit_for_row(row, sample_count_option)
+                sample_limit = _sample_limit_for_row(sample_count_option)
 
                 try:
                     samples_response = backend_api_client.market_data.get_spread_data(
                         pair=selected_pair,
                         connector=selected_connector,
-                        limit=sample_limit
+                        limit=sample_limit,
+                        include_total_count=(sample_count_option == "All"),
                     )
+                    total_available += int(samples_response.get("total_count") or 0) if samples_response else 0
                     if samples_response and samples_response.get("data"):
                         pair_samples_df = pd.DataFrame(samples_response["data"])
                         pair_samples_df["connector"] = selected_connector
@@ -396,13 +398,9 @@ if "download_spread__spread_df" in st.session_state:
 
             samples_header_col, samples_download_col, samples_email_col = st.columns([6, 1, 1])
             with samples_header_col:
-                total_sample_count = pd.to_numeric(
-                    selected_pairs_df.get("sample_count", pd.Series(dtype="float64")),
-                    errors="coerce",
-                ).dropna().astype(int).sum()
-                if sample_count_option == "All" and total_sample_count:
+                if sample_count_option == "All" and total_available:
                     st.caption(
-                        f"Showing {len(samples_df)} of {total_sample_count} samples across {len(selected_pairs_df)} pair(s)"
+                        f"Showing {len(samples_df)} of {total_available} samples across {len(selected_pairs_df)} pair(s)"
                     )
                 else:
                     st.caption(f"Showing {len(samples_df)} samples across {len(selected_pairs_df)} pair(s)")
