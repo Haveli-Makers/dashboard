@@ -126,6 +126,20 @@ def _fetch_spread_samples_bulk(requests, include_total_count=False):
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
+def _cached_csv(df):
+    """CSV bytes for a dataframe, memoized so large tables aren't re-serialized
+    on every rerun."""
+    return df.to_csv(index=False)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _cached_xlsx(sheets):
+    """XLSX bytes for a {sheet_name: dataframe} mapping, memoized (the build is
+    multi-second for tens of thousands of rows)."""
+    return dataframes_to_xlsx_bytes(sheets)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
 def _build_sample_downloads(samples_df, sheet_specs):
     """Build the CSV + XLSX bytes for the samples table.
 
@@ -327,7 +341,7 @@ if "download_spread__spread_df" in st.session_state:
     with header_col:
         st.subheader("Spread Data Details")
 
-    st.caption("Select one or more rows to view all samples for those trading pairs in a single table.")
+    st.caption("Tick one or more rows, choose how many spreads, then click **Fetch Samples**.")
 
     # Render the table first so it paints immediately; the CSV/XLSX payloads
     # below are memoized so they are only rebuilt when the data changes.
@@ -416,16 +430,6 @@ if "download_spread__spread_df" in st.session_state:
                 except Exception as email_err:
                     st.error(f"Failed to send email: {str(email_err)}")
 
-    st.caption("Tick one or more rows, choose how many spreads, then click **Fetch Samples**.")
-
-    selection = st.dataframe(
-        display_df,
-        use_container_width=True,
-        selection_mode="multi-row",
-        on_select="rerun",
-        key="spread_summary_table",
-    )
-
     selected_rows = selection.selection.rows if selection.selection else []
     selected_rows = [row for row in selected_rows if row < len(spread_df)]
     if not selected_rows:
@@ -512,7 +516,6 @@ if "download_spread__spread_df" in st.session_state:
                 "total_available": fetched_total,
                 "errors": fetch_errors,
                 "sheet_specs": tuple(sheet_specs),
-                "window_hours_used": window_hours_used,
             }
 
         cached_samples = st.session_state.get("download_spread__samples")
@@ -535,7 +538,6 @@ if "download_spread__spread_df" in st.session_state:
             sample_count_option = cached_samples["sample_count_option"]
             total_available = cached_samples["total_available"]
             sheet_specs = cached_samples["sheet_specs"]
-            window_hours_used = cached_samples["window_hours_used"]
 
             samples_header_col, samples_download_col, samples_email_col = st.columns([6, 1, 1])
             with samples_header_col:
@@ -559,8 +561,6 @@ if "download_spread__spread_df" in st.session_state:
                 _safe_filename_part(p.replace("-", "")) for p in sorted(selected_pairs_df["pair"].unique().tolist())
             )
             samples_xlsx_filename = f"samples_{selected_connectors_str}_{selected_pairs_str}.xlsx"
-
-            samples_csv = _cached_csv(samples_df)
 
             samples_csv, samples_xlsx = _build_sample_downloads(samples_df, sheet_specs)
 
