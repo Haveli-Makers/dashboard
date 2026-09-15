@@ -7,6 +7,27 @@ class MarketDataRouter(BaseRouter):
     """Market Data router for real-time and historical market data."""
 
     # Candles Operations
+    async def get_available_candle_connectors(self) -> List[str]:
+        """
+        Get the list of connectors that support candle data feeds.
+
+        Returns:
+            List of connector names that can be used for fetching candle data
+        """
+        return await self._get("/market-data/available-candle-connectors")
+
+    async def get_candle_intervals(self, connector: str) -> List[str]:
+        """
+        Get the list of candle intervals supported by a given connector.
+
+        Args:
+            connector: Connector name as returned by get_available_candle_connectors()
+
+        Returns:
+            List of interval strings (e.g. ["1m", "5m", "1h", "1d"]) supported by the connector
+        """
+        return await self._get(f"/market-data/candle-intervals/{connector}")
+
     async def get_candles(
         self,
         connector_name: str,

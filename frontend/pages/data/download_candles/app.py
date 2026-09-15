@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, time, timedelta, timezone
 
 import aiohttp
@@ -7,18 +8,42 @@ import streamlit as st
 
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
+FALLBACK_CONNECTORS = ["binance_perpetual", "binance", "gate_io", "gate_io_perpetual", "kucoin", "kucoin_perpetual", "okx"]
+FALLBACK_INTERVALS = ["1m", "3m", "5m", "15m", "1h", "4h", "1d", "1s"]
+UNAVAILABLE_CONNECTORS = {"ascend_ex"}
+
+
+def _safe_filename_part(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_") or "unknown"
+
+
 # Initialize Streamlit page
 initialize_st_page(title="Download Candles", icon="💾")
 backend_api_client = get_backend_api_client()
 
+if "download_candles__connectors" not in st.session_state:
+    try:
+        available_connectors = backend_api_client.market_data.get_available_candle_connectors()
+        connectors = sorted(available_connectors) if available_connectors else FALLBACK_CONNECTORS
+    except Exception:
+        connectors = FALLBACK_CONNECTORS
+    st.session_state["download_candles__connectors"] = [c for c in connectors if c not in UNAVAILABLE_CONNECTORS]
+available_connectors = st.session_state["download_candles__connectors"]
+
 c1, c2, c3, c4 = st.columns([2, 2, 2, 0.5])
 with c1:
-    connector = st.selectbox("Exchange",
-                             ["binance_perpetual", "binance", "gate_io", "gate_io_perpetual", "kucoin", "kucoin_perpetual", "okx", "coindcx", "wazirx", "zebpay", "coinex", "coinex_perpetual", "csx", "coinswitch"],
-                             index=0)
+    connector = st.selectbox("Exchange", available_connectors, index=0)
     trading_pair = st.text_input("Trading Pair", value="BTC-USDT")
 with c2:
-    interval = st.selectbox("Interval", options=["1m", "3m", "5m", "15m", "1h", "4h", "1d", "1s"])
+    intervals_cache = st.session_state.setdefault("download_candles__intervals_by_connector", {})
+    if connector not in intervals_cache:
+        try:
+            connector_intervals = backend_api_client.market_data.get_candle_intervals(connector)
+            intervals_cache[connector] = connector_intervals if connector_intervals else FALLBACK_INTERVALS
+        except Exception:
+            intervals_cache[connector] = FALLBACK_INTERVALS
+    interval_options = intervals_cache[connector]
+    interval = st.selectbox("Interval", options=interval_options)
 with c3:
     coarse_interval = interval in ("1h", "4h", "1d")
     start_date = st.date_input("Start Date", value=datetime.now().date() - timedelta(days=1))
@@ -37,10 +62,10 @@ if get_data_button:
     else:
         start_datetime = datetime.combine(start_date, start_time_input)
         end_datetime_full = datetime.combine(end_date, end_time_input)
-    end_datetime = min(end_datetime_full, datetime.now())
-    if end_datetime < start_datetime:
+    if end_datetime_full < start_datetime:
         st.error("End Date should be greater than Start Date.")
         st.stop()
+    end_datetime = min(end_datetime_full, datetime.now())
 
     start_ts = int(start_datetime.timestamp())
     end_ts = int(end_datetime.timestamp())
@@ -108,7 +133,8 @@ if get_data_button:
 
     try:
         candles_df = pd.DataFrame(candles)
-        candles_df.index = pd.to_datetime(candles_df["timestamp"], unit='s')
+        local_tz = datetime.now().astimezone().tzinfo
+        candles_df.index = pd.to_datetime(candles_df["timestamp"], unit='s', utc=True).dt.tz_convert(local_tz)
         missing_cols = [c for c in ("open", "high", "low", "close") if c not in candles_df.columns]
         if missing_cols:
             raise KeyError(f"response rows are missing expected column(s): {missing_cols}")
@@ -143,7 +169,10 @@ if get_data_button:
 
     # Generating CSV and download button
     csv = candles_df.to_csv(index=False)
-    filename = f"{connector}_{trading_pair}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
+    filename = (
+        f"{_safe_filename_part(connector)}_{_safe_filename_part(trading_pair)}_"
+        f"{start_datetime.strftime('%Y%m%d%H%M%S')}_{end_datetime.strftime('%Y%m%d%H%M%S')}.csv"
+    )
     st.download_button(
         label="Download Candles as CSV",
         data=csv,
