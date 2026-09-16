@@ -13,6 +13,7 @@ from CONFIG import (
     SMTP_HOST,
     SMTP_PASSWORD,
     SMTP_PORT,
+    SMTP_TIMEOUT,
     SMTP_USE_TLS,
     SMTP_USERNAME,
 )
@@ -78,20 +79,41 @@ def parse_recipients(raw: str) -> tuple[list[str], list[str]]:
     return valid, invalid
 
 
+def _xlsx_cell_value(value):
+    """Coerce a pandas/numpy scalar into something openpyxl's write-only mode accepts."""
+    if value is None or value is pd.NaT:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
 def dataframes_to_xlsx_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     """Build an in-memory .xlsx file from a dict of {sheet_name: DataFrame}."""
+    from openpyxl import Workbook
+
+    export_sheets = sheets or {"Sheet1": pd.DataFrame()}
+    workbook = Workbook(write_only=True)
+    for sheet_name, df in export_sheets.items():
+        safe_name = (sheet_name or "Sheet1")[:31]
+        worksheet = workbook.create_sheet(title=safe_name)
+        worksheet.append(list(df.columns))
+        for row in df.itertuples(index=False, name=None):
+            worksheet.append([_xlsx_cell_value(v) for v in row])
+
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        export_sheets = sheets or {"Sheet1": pd.DataFrame()}
-        for sheet_name, df in export_sheets.items():
-            safe_name = sheet_name[:31] or "Sheet1"
-            df.to_excel(writer, sheet_name=safe_name, index=False)
+    workbook.save(buffer)
     buffer.seek(0)
     return buffer.read()
 
 
 def is_smtp_configured() -> bool:
     return bool(SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD)
+
+
+MAX_EMAIL_ATTACHMENT_BYTES = 18 * 1024 * 1024
 
 
 def send_email_with_xlsx(
@@ -108,6 +130,12 @@ def send_email_with_xlsx(
         )
     if not to_emails:
         raise ValueError("No valid recipient email addresses were provided.")
+    if len(attachment_bytes) > MAX_EMAIL_ATTACHMENT_BYTES:
+        size_mb = len(attachment_bytes) / (1024 * 1024)
+        raise ValueError(
+            f"The attachment is {size_mb:.1f} MB, which is too large to email reliably "
+            "Use the Download button instead."
+        )
 
     msg = MIMEMultipart()
     msg["From"] = SMTP_FROM_EMAIL or SMTP_USERNAME
@@ -123,7 +151,7 @@ def send_email_with_xlsx(
     msg.attach(part)
 
     smtp_class = smtplib.SMTP_SSL if SMTP_USE_TLS and SMTP_PORT == 465 else smtplib.SMTP
-    with smtp_class(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+    with smtp_class(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
         if SMTP_USE_TLS and smtp_class is smtplib.SMTP:
             server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
