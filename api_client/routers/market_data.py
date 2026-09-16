@@ -435,6 +435,7 @@ class MarketDataRouter(BaseRouter):
         pair: str,
         connector: str,
         limit: Optional[int] = None,
+        offset: int = 0,
         include_total_count: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -443,7 +444,9 @@ class MarketDataRouter(BaseRouter):
         Args:
             pair: Trading pair filter (e.g., "BTC-USDT")
             connector: Connector filter (e.g., "binance")
-            limit: Maximum number of spread samples to return
+            limit: Maximum number of spread samples to return (server caps this at 10,000
+                per request; use ``offset`` to page past that)
+            offset: Number of matching rows to skip before returning results
             include_total_count: When True, the response also carries an exact
                 ``total_count`` of all matching samples across full history
 
@@ -457,6 +460,8 @@ class MarketDataRouter(BaseRouter):
         params = {}
         if limit is not None:
             params["limit"] = int(limit)
+        if offset:
+            params["offset"] = int(offset)
         if include_total_count:
             params["include_total_count"] = "true"
         return await self._get(
