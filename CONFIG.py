@@ -33,6 +33,7 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ("true", "1", "t")
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USERNAME)
+SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT") or 120)
 
 SPREAD_EMAIL_SUBJECT_TEMPLATE = os.getenv(
     "SPREAD_EMAIL_SUBJECT_TEMPLATE",

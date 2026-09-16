@@ -96,22 +96,15 @@ def build_saved_script_config(script_name, config):
     return saved_config
 
 
-_OPTION_LIST_RE = re.compile(r"\(([^()]+)\)\s*:?\s*$")
-_OPTION_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\([^()]*\)\s*:?\s*$")
 
 
-def extract_prompt_options(prompt):
-    """Pull a dropdown option list out of prompts like '... (binance, kucoin, ...):'."""
-    match = _OPTION_LIST_RE.search(prompt)
-    if not match:
-        return prompt, None
-    tokens = [token.strip() for token in match.group(1).split(",")]
-    if len(tokens) < 2 or not all(_OPTION_TOKEN_RE.match(token) for token in tokens):
-        return prompt, None
-    label = prompt[:match.start()].rstrip()
+def strip_trailing_parenthetical(prompt):
+    """Drop a trailing '(...)' hint from a prompt"""
+    label = _TRAILING_PARENTHETICAL_RE.sub("", prompt).rstrip()
     if prompt.rstrip().endswith(":"):
         label += ":"
-    return label, tokens
+    return label
 
 
 def render_config_inputs(config_template, prefix="config", overrides=None):
@@ -123,24 +116,37 @@ def render_config_inputs(config_template, prefix="config", overrides=None):
         annotation = field_info.get("annotation", "")
         prompt = field_info.get("prompt", field_name)
 
-        label, options = extract_prompt_options(prompt) if "str" in annotation or not annotation else (prompt, None)
+        input_type = field_info.get("input_type")
+        explicit_options = field_info.get("options")
 
-        if options:
+        if input_type == "multiselect" and explicit_options:
+            default_list = [v.strip() for v in str(default).split(",") if v.strip()] if default else []
+            selected = st.multiselect(
+                strip_trailing_parenthetical(prompt),
+                options=explicit_options,
+                default=[v for v in default_list if v in explicit_options],
+                key=f"{prefix}_{field_name}"
+            )
+            config[field_name] = ",".join(selected)
+            continue
+
+        if input_type == "select" and explicit_options:
             default_str = str(default) if default is not None else ""
-            index = options.index(default_str) if default_str in options else 0
+            index = explicit_options.index(default_str) if default_str in explicit_options else 0
             config[field_name] = st.selectbox(
-                label,
-                options=options,
+                strip_trailing_parenthetical(prompt),
+                options=explicit_options,
                 index=index,
                 key=f"{prefix}_{field_name}"
             )
-        elif "int" in annotation:
-            if "int" in annotation:
-                config[field_name] = st.number_input(
-                    prompt,
-                    value=int(default) if default is not None else 0,
-                    key=f"{prefix}_{field_name}"
-                )
+            continue
+
+        if "int" in annotation:
+            config[field_name] = st.number_input(
+                prompt,
+                value=int(default) if default is not None else 0,
+                key=f"{prefix}_{field_name}"
+            )
         elif "str" in annotation:
             config[field_name] = st.text_input(
                 prompt,
