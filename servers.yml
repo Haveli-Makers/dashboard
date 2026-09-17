@@ -2,7 +2,7 @@ servers:
   - name: "Local"
     host: "127.0.0.1"
     port: 8000
-    username: "dipti"
+    username: "admin"
     password: "admin"
   - name: "Production"
     host: "YOUR_SERVER_IP"
