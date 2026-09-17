@@ -25,12 +25,7 @@ from frontend.email_utils import (
     render_template,
     send_email_with_xlsx,
 )
-from api_client.audit import audit_logged
-from frontend.st_utils import (
-    get_backend_api_client,
-    get_selected_server_config,
-    initialize_st_page,
-)
+from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 
 def _fragment(run_every=None):
@@ -363,6 +358,7 @@ def _build_sample_downloads(samples_df, sheet_specs):
 # Initialize Streamlit page
 initialize_st_page(title="Download Spread", icon="📊")
 backend_api_client = get_backend_api_client()
+window_hours = 24
 c1, c2, c3 = st.columns([2, 2, 0.5])
 with c1:
     connectors = st.multiselect(
@@ -386,10 +382,11 @@ if get_data_button:
         try:
             pairs_list = [p.strip() for p in trading_pairs.split(",") if p.strip()]
 
-            with st.spinner("Fetching spread data..."), audit_logged():
+            with st.spinner("Fetching spread data..."):
                 spread_response = backend_api_client.market_data.get_spread_averages(
                     pairs=pairs_list,
                     connectors=connectors,
+                    window_hours=window_hours
                 )
 
             volume_pairs_by_connector = {}
@@ -406,7 +403,7 @@ if get_data_button:
 
             volume_records = []
             failed_pairs = []
-            with st.spinner("Fetching volume data..."), audit_logged():
+            with st.spinner("Fetching volume data..."):
                 for connector in connectors:
                     volume_pairs_list = pairs_list if pairs_list else volume_pairs_by_connector.get(connector, [])
                     if not volume_pairs_list:
@@ -495,6 +492,7 @@ if get_data_button:
                 st.session_state["download_spread__failed_pairs"] = failed_pairs
                 st.session_state["download_spread__pairs_list"] = pairs_list
                 st.session_state["download_spread__connectors"] = connectors
+                st.session_state["download_spread__window_hours"] = window_hours
 
             else:
                 if spread_response and spread_response.get("data"):
@@ -518,6 +516,7 @@ if get_data_button:
                         st.session_state["download_spread__failed_pairs"] = failed_pairs
                         st.session_state["download_spread__pairs_list"] = pairs_list
                         st.session_state["download_spread__connectors"] = connectors
+                        st.session_state["download_spread__window_hours"] = window_hours
                     else:
                         st.warning("No spread data available for the selected parameters.")
                 else:
@@ -532,6 +531,7 @@ if "download_spread__spread_df" in st.session_state:
     failed_pairs = st.session_state.get("download_spread__failed_pairs", [])
     pairs_list = st.session_state.get("download_spread__pairs_list", [])
     connectors_used = st.session_state.get("download_spread__connectors", connectors)
+    window_hours_used = st.session_state.get("download_spread__window_hours", window_hours)
 
     if failed_pairs:
         st.warning("Some pairs had errors:\n- " + "\n- ".join(failed_pairs))
@@ -539,25 +539,8 @@ if "download_spread__spread_df" in st.session_state:
     connectors_str = "_".join(connectors_used)
     pairs_str = "_".join([p.replace("-", "") for p in pairs_list]) if pairs_list else "all"
     display_df = spread_df.drop(columns=["sample_count"], errors="ignore")
-    spread_xlsx_filename = f"spread_{connectors_str}_{pairs_str}.xlsx"
-
-    header_col, download_col, email_col = st.columns([8, 1, 1])
-    with header_col:
-        st.subheader("Spread Data Details")
-
-    st.caption("Tick one or more rows, choose how many spreads, then click **Fetch Samples**.")
-
-    # Render the table first so it paints immediately; the CSV/XLSX payloads
-    # below are memoized so they are only rebuilt when the data changes.
-    selection = st.dataframe(
-        display_df,
-        use_container_width=True,
-        selection_mode="multi-row",
-        on_select="rerun",
-        key="spread_summary_table",
-    )
-
-    spread_csv = _cached_csv(display_df)
+    spread_csv = display_df.to_csv(index=False)
+    spread_xlsx_filename = f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.xlsx"
 
     spread_sheets = {}
     used_spread_sheet_names = set()
@@ -574,14 +557,17 @@ if "download_spread__spread_df" in st.session_state:
         spread_sheets["Spread Data"] = display_df
     if not spread_sheets:
         spread_sheets["Spread Data"] = display_df
-    spread_xlsx = _cached_xlsx(spread_sheets)
+    spread_xlsx = dataframes_to_xlsx_bytes(spread_sheets)
 
+    header_col, download_col, email_col = st.columns([8, 1, 1])
+    with header_col:
+        st.subheader("Spread Data Details")
     with download_col:
         with st.popover("⬇️", use_container_width=True):
             st.download_button(
                 label="Download as CSV",
                 data=spread_csv,
-                file_name=f"spread_{connectors_str}_{pairs_str}.csv",
+                file_name=f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.csv",
                 mime="text/csv",
                 key="dl_spread",
                 use_container_width=True,
@@ -617,6 +603,7 @@ if "download_spread__spread_df" in st.session_state:
                         email_context = build_spread_email_context(
                             connectors=connectors_used,
                             pairs=pairs_list,
+                            window_hours=window_hours_used,
                             row_count=len(display_df),
                             failed_count=len(failed_pairs),
                         )
@@ -633,6 +620,16 @@ if "download_spread__spread_df" in st.session_state:
                         st.success(f"Email sent to {', '.join(recipients)}")
                 except Exception as email_err:
                     st.error(f"Failed to send email: {str(email_err)}")
+
+    st.caption("Tick one or more rows, choose how many spreads, then click **Fetch Samples**.")
+
+    selection = st.dataframe(
+        display_df,
+        use_container_width=True,
+        selection_mode="multi-row",
+        on_select="rerun",
+        key="spread_summary_table",
+    )
 
     selected_rows = selection.selection.rows if selection.selection else []
     selected_rows = [row for row in selected_rows if row < len(spread_df)]
@@ -677,7 +674,7 @@ if "download_spread__spread_df" in st.session_state:
             with st.spinner("Fetching samples..."):
                 try:
                     bulk_samples = _fetch_spread_samples_bulk(
-                        fetch_requests, include_total_count=want_total
+                        backend_api_client, fetch_requests, include_total_count=want_total
                     )
                 except Exception as bulk_err:  # noqa: BLE001
                     bulk_samples = {(c, p, 0): bulk_err for c, p, _lim in fetch_requests}
@@ -770,7 +767,7 @@ if "download_spread__spread_df" in st.session_state:
             selected_pairs_str = "_".join(
                 _safe_filename_part(p.replace("-", "")) for p in sorted(selected_pairs_df["pair"].unique().tolist())
             )
-            samples_xlsx_filename = f"samples_{selected_connectors_str}_{selected_pairs_str}.xlsx"
+            samples_xlsx_filename = f"samples_{selected_connectors_str}_{selected_pairs_str}_{window_hours_used}h.xlsx"
 
             full_cache_key = (cached_samples["keys"], sample_count_option)
             prepared_full = st.session_state.get("download_spread__prepared_full")
