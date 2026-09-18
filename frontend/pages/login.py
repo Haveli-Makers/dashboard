@@ -4,15 +4,7 @@ import html
 import streamlit as st
 
 from CONFIG import GOOGLE_ALLOWED_DOMAIN, GOOGLE_SSO_ENABLED
-from frontend.st_utils import start_google_login
-
-
-def _google_auth_configured() -> bool:
-    try:
-        _ = st.user  
-    except Exception:
-        return False
-    return True
+from frontend.st_utils import sign_out, start_google_login
 
 
 st.set_page_config(
@@ -109,17 +101,19 @@ with st.container(horizontal_alignment="center"):
                 """,
                 unsafe_allow_html=True,
             )
+            with st.container(key="google_login_button", horizontal_alignment="center"):
+                st.button("Try a different account", on_click=sign_out, width="stretch")
         else:
             st.markdown(
                 '<div class="login-card"><p>Sign in with your HaveliMakers Google account to continue</p></div>',
                 unsafe_allow_html=True,
             )
 
-        if not GOOGLE_SSO_ENABLED:
-            st.warning("Google Sign-In is not enabled.")
-        elif not _google_auth_configured():
-            st.error("Google Sign-In isn't configured yet. Check .streamlit/secrets.toml.")
-        else:
-            with st.container(key="google_login_button", horizontal_alignment="center"):
-                st.button("🔒  Sign in with Google", on_click=start_google_login, width="stretch")
+            if not GOOGLE_SSO_ENABLED:
+                st.warning("Google Sign-In is not enabled.")
+            elif st.session_state.get("google_auth_not_configured"):
+                st.error("Google Sign-In isn't configured yet. Check .streamlit/secrets.toml.")
+            else:
+                with st.container(key="google_login_button", horizontal_alignment="center"):
+                    st.button("🔒  Sign in with Google", on_click=start_google_login, width="stretch")
 

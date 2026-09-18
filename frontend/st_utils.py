@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import yaml
 from streamlit.commands.page_config import InitialSideBarState, Layout
+from streamlit.errors import StreamlitAuthError
 from yaml import SafeLoader
 
 from CONFIG import AUTH_SYSTEM_ENABLED, GOOGLE_ALLOWED_DOMAIN, GOOGLE_SSO_ENABLED
@@ -140,7 +141,10 @@ def get_selected_server_config() -> dict:
 
 def start_google_login():
     st.session_state.pop("google_access_denied_email", None)
-    st.login("google")
+    try:
+        st.login("google")
+    except StreamlitAuthError:
+        st.session_state["google_auth_not_configured"] = True
 
 
 def _sync_google_login() -> bool:
@@ -155,15 +159,11 @@ def _sync_google_login() -> bool:
         return False
 
     if not getattr(user, "is_logged_in", False):
-        st.session_state.pop("google_access_denied_email", None)
         return False
 
     email = (user.email or "").lower()
     if GOOGLE_ALLOWED_DOMAIN and not email.endswith(f"@{GOOGLE_ALLOWED_DOMAIN.lower()}"):
-        already_seen = st.session_state.get("google_access_denied_email") == email
         st.session_state.google_access_denied_email = email
-        if already_seen:
-            st.logout()
         return False
 
     st.session_state.pop("google_access_denied_email", None)
@@ -235,6 +235,12 @@ def _clear_google_auth_state():
         st.session_state.pop(key, None)
 
 
+def sign_out():
+    _clear_google_auth_state()
+    st.session_state.pop("google_access_denied_email", None)
+    st.logout()
+
+
 def auth_system():
     visible_sections = _get_selected_server().get('visible_sections')
     if not AUTH_SYSTEM_ENABLED:
@@ -250,9 +256,7 @@ def auth_system():
     if st.session_state.get("authentication_status", False):
         render_server_selector()
         if st.sidebar.button("Logout"):
-            _clear_google_auth_state()
-            st.logout()
-            st.rerun()
+            sign_out()
 
         st.sidebar.write(f'Welcome *{st.session_state.get("name", st.session_state.get("username", "User"))}*')
         return {
