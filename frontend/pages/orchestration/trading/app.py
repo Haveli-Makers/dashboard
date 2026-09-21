@@ -114,25 +114,58 @@ def get_active_orders():
         return []
 
 
-def get_order_history():
-    """Get recent order history."""
+def _extract_data(response):
+    if isinstance(response, list):
+        return response
+    elif isinstance(response, dict):
+        if response.get("status") == "success":
+            return response.get("data", [])
+        elif "data" in response:
+            return response.get("data", [])
+    return []
+
+
+def get_order_history(start_date=None, end_date=None, tz=None):
+    """
+    Get order history for [start_date, end_date] (inclusive, local dates).
+    """
+    start_ms = end_ms = None
+    if start_date is not None and end_date is not None:
+        tz = tz or datetime.datetime.now().astimezone().tzinfo
+        start_ms = int(datetime.datetime.combine(start_date, datetime.time.min, tzinfo=tz).timestamp() * 1000)
+        end_ms = int(datetime.datetime.combine(end_date, datetime.time.max, tzinfo=tz).timestamp() * 1000)
+
+    db_orders = []
     try:
-        # Try to get orders instead of order_history since that method doesn't exist
-        response = backend_api_client.trading.search_orders(limit=50)
-        # Handle both response formats
-        if isinstance(response, list):
-            return response
-        elif isinstance(response, dict):
-            # Check for different response formats
-            if response.get("status") == "success":
-                return response.get("data", [])
-            elif "data" in response:
-                # Handle response format like {"data": [...], "pagination": {...}}
-                return response.get("data", [])
-        return []
+        response = backend_api_client.trading.search_orders(limit=200, start_time=start_ms, end_time=end_ms)
+        db_orders = _extract_data(response)
     except Exception:
-        # If get_orders doesn't exist either, just return empty list without warning
-        return []
+        pass
+
+    exchange_orders = []
+    if st.session_state.selected_account and st.session_state.selected_connector:
+        try:
+            selected_pair = st.session_state.selected_market.get("trading_pair")
+            response = backend_api_client.trading.search_exchange_orders(
+                account_names=[st.session_state.selected_account],
+                connector_names=[st.session_state.selected_connector],
+                trading_pairs=[selected_pair] if selected_pair else None,
+                start_time=start_ms,
+                end_time=end_ms,
+                limit=200,
+            )
+            exchange_orders = _extract_data(response)
+        except Exception:
+            pass
+
+    db_exchange_order_ids = {
+        o.get("exchange_order_id") for o in db_orders if o.get("exchange_order_id")
+    }
+    exchange_orders = [
+        o for o in exchange_orders if o.get("exchange_order_id") not in db_exchange_order_ids
+    ]
+
+    return db_orders + exchange_orders
 
 
 def get_order_book(connector, trading_pair, depth=10):
@@ -1357,10 +1390,9 @@ def show_trading_data():
     # Data tables section
     st.divider()
 
-    # Get positions, orders, and history
+    # Get positions and orders
     positions = get_positions()
     orders = get_active_orders()
-    order_history = get_order_history()
 
     # Display in tabs - Balances first
     tab1, tab2, tab3, tab4 = st.tabs(["💰 Balances", "📊 Positions", "📋 Active Orders", "📜 Order History"])
@@ -1372,22 +1404,87 @@ def show_trading_data():
     with tab3:
         render_orders_table(orders)
     with tab4:
-        render_order_history_table(order_history)
+        render_order_history_table()
 
 
-def render_order_history_table(order_history):
-    """Render order history table."""
+def _parse_mixed_timestamp(value):
+    if value is None or value == "":
+        return pd.NaT
+    if isinstance(value, (int, float)):
+        seconds = value / 1000 if value > 1_000_000_000_000 else value
+        return pd.to_datetime(seconds, unit="s", utc=True, errors="coerce")
+    return pd.to_datetime(value, utc=True, errors="coerce")
+
+
+def render_order_history_table():
+    """Render order history with a freely configurable date filter (local time)."""
+    st.subheader("📜 Order History")
+
+    local_tz = datetime.datetime.now().astimezone().tzinfo
+    today = datetime.datetime.now(local_tz).date()
+    week_ago = today - datetime.timedelta(days=7)
+    picker_min = today - datetime.timedelta(days=730)
+    picker_max = today
+
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    with filter_col1:
+        start_date = st.date_input(
+            "From",
+            value=week_ago,
+            min_value=picker_min,
+            max_value=picker_max,
+            key="order_history_start_date",
+        )
+    with filter_col2:
+        end_date = st.date_input(
+            "To",
+            value=today,
+            min_value=picker_min,
+            max_value=picker_max,
+            key="order_history_end_date",
+        )
+    if start_date > end_date:
+        st.warning("'From' date is after 'To' date - showing no results.")
+        return
+
+    order_history = get_order_history(start_date=start_date, end_date=end_date, tz=local_tz)
     if not order_history:
-        st.info("No order history found.")
+        st.info("No orders found for the selected date range.")
         return
 
     # Convert to DataFrame
     df = pd.DataFrame(order_history)
     if df.empty:
-        st.info("No order history found.")
+        st.info("No orders found for the selected date range.")
         return
 
-    st.subheader("📜 Order History")
+    time_columns = [col for col in ("created_at", "updated_at", "timestamp") if col in df.columns]
+    for col in time_columns:
+        df[col] = df[col].apply(_parse_mixed_timestamp)
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.tz_convert(local_tz)
+
+    date_col = "created_at" if "created_at" in time_columns else ("timestamp" if "timestamp" in time_columns else None)
+    if date_col:
+        df = df.sort_values(date_col, ascending=False, na_position="last")
+
+    if df.empty:
+        st.info("No orders found for the selected date range.")
+        return
+
+    for col in time_columns:
+        df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S").where(df[col].notna(), "—")
+
+    with filter_col3:
+        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
+        st.download_button(
+            "⬇️ Download CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name=f"order_history_{start_date}_{end_date}.csv",
+            mime="text/csv",
+            key="order_history_csv_download",
+        )
+
     st.dataframe(
         df,
         use_container_width=True,
@@ -1401,10 +1498,6 @@ def render_order_history_table(order_history):
                 "Amount",
                 format="%.6f"
             ),
-            "timestamp": st.column_config.DatetimeColumn(
-                "Time",
-                format="DD/MM/YYYY HH:mm:ss"
-            )
         }
     )
 
