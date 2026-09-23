@@ -158,13 +158,6 @@ def get_order_history(start_date=None, end_date=None, tz=None):
         except Exception:
             pass
 
-    db_exchange_order_ids = {
-        o.get("exchange_order_id") for o in db_orders if o.get("exchange_order_id")
-    }
-    exchange_orders = [
-        o for o in exchange_orders if o.get("exchange_order_id") not in db_exchange_order_ids
-    ]
-
     return db_orders + exchange_orders
 
 
