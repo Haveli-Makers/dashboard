@@ -81,9 +81,10 @@ def parse_recipients(raw: str) -> tuple[list[str], list[str]]:
 
 def _xlsx_cell_value(value):
     """Coerce a pandas/numpy scalar into something openpyxl's write-only mode accepts."""
-    if value is None or value is pd.NaT:
+    if value is None:
         return None
-    if isinstance(value, float) and pd.isna(value):
+    is_na = pd.isna(value)
+    if is_na is True:
         return None
     if hasattr(value, "item"):
         return value.item()
@@ -130,10 +131,11 @@ def send_email_with_xlsx(
         )
     if not to_emails:
         raise ValueError("No valid recipient email addresses were provided.")
-    if len(attachment_bytes) > MAX_EMAIL_ATTACHMENT_BYTES:
+    encoded_size = -(-len(attachment_bytes) * 4 // 3)
+    if encoded_size > MAX_EMAIL_ATTACHMENT_BYTES:
         size_mb = len(attachment_bytes) / (1024 * 1024)
         raise ValueError(
-            f"The attachment is {size_mb:.1f} MB, which is too large to email reliably "
+            f"The attachment is {size_mb:.1f} MB, which is too large to email reliably. "
             "Use the Download button instead."
         )
 

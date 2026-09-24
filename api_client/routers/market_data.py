@@ -458,6 +458,7 @@ class MarketDataRouter(BaseRouter):
         connector: str,
         limit: Optional[int] = None,
         offset: int = 0,
+        before_timestamp: Optional[int] = None,
         include_total_count: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -467,8 +468,13 @@ class MarketDataRouter(BaseRouter):
             pair: Trading pair filter (e.g., "BTC-USDT")
             connector: Connector filter (e.g., "binance")
             limit: Maximum number of spread samples to return (server caps this at 10,000
-                per request; use ``offset`` to page past that)
-            offset: Number of matching rows to skip before returning results
+                per request; use ``offset`` or ``before_timestamp`` to page past that)
+            offset: Number of matching rows to skip before returning results.
+                Ignored by the server when ``before_timestamp`` is given.
+            before_timestamp: Keyset cursor - only rows strictly older than this
+                timestamp are returned. Prefer this over ``offset`` when paging
+                through many pages, since it does not shift under concurrently
+                inserted rows.
             include_total_count: When True, the response also carries an exact
                 ``total_count`` of all matching samples across full history
 
@@ -482,7 +488,9 @@ class MarketDataRouter(BaseRouter):
         params = {}
         if limit is not None:
             params["limit"] = int(limit)
-        if offset:
+        if before_timestamp is not None:
+            params["before_timestamp"] = int(before_timestamp)
+        elif offset:
             params["offset"] = int(offset)
         if include_total_count:
             params["include_total_count"] = "true"

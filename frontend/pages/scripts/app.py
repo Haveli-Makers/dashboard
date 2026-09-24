@@ -98,12 +98,19 @@ def build_saved_script_config(script_name, config):
     return saved_config
 
 
-_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\([^()]*\)\s*:?\s*$")
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\(([^()]*)\)\s*:?\s*$")
 
 
-def strip_trailing_parenthetical(prompt):
+def strip_trailing_parenthetical(prompt, explicit_options=None):
     """Drop a trailing '(...)' hint from a prompt"""
-    label = _TRAILING_PARENTHETICAL_RE.sub("", prompt).rstrip()
+    match = _TRAILING_PARENTHETICAL_RE.search(prompt)
+    if not match:
+        return prompt
+    if explicit_options:
+        tokens = [token.strip() for token in match.group(1).split(",") if token.strip()]
+        if not tokens or not all(token in explicit_options for token in tokens):
+            return prompt
+    label = prompt[:match.start()].rstrip()
     if prompt.rstrip().endswith(":"):
         label += ":"
     return label
@@ -122,9 +129,14 @@ def render_config_inputs(config_template, prefix="config", overrides=None):
         explicit_options = field_info.get("options")
 
         if input_type == "multiselect" and explicit_options:
-            default_list = [v.strip() for v in str(default).split(",") if v.strip()] if default else []
+            if isinstance(default, (list, tuple)):
+                default_list = [str(v).strip() for v in default]
+            elif default:
+                default_list = [v.strip() for v in str(default).split(",") if v.strip()]
+            else:
+                default_list = []
             selected = st.multiselect(
-                strip_trailing_parenthetical(prompt),
+                strip_trailing_parenthetical(prompt, explicit_options),
                 options=explicit_options,
                 default=[v for v in default_list if v in explicit_options],
                 key=f"{prefix}_{field_name}"
@@ -136,7 +148,7 @@ def render_config_inputs(config_template, prefix="config", overrides=None):
             default_str = str(default) if default is not None else ""
             index = explicit_options.index(default_str) if default_str in explicit_options else 0
             config[field_name] = st.selectbox(
-                strip_trailing_parenthetical(prompt),
+                strip_trailing_parenthetical(prompt, explicit_options),
                 options=explicit_options,
                 index=index,
                 key=f"{prefix}_{field_name}"
@@ -164,7 +176,6 @@ def render_config_inputs(config_template, prefix="config", overrides=None):
             )
     return config
 
-import json
 
 def render_output(result):
     status = result.get("status", "unknown")
