@@ -1,21 +1,78 @@
+import io
 import re
-from datetime import datetime, time, timedelta, timezone
+import zipfile
+from datetime import datetime, time
+from datetime import timedelta
 
-import aiohttp
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from api_client.audit import audit_logged
+from frontend.email_utils import dataframes_to_xlsx_bytes
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 FALLBACK_CONNECTORS = ["binance_perpetual", "binance", "gate_io", "gate_io_perpetual", "kucoin", "kucoin_perpetual", "okx"]
 FALLBACK_INTERVALS = ["1m", "3m", "5m", "15m", "1h", "4h", "1d", "1s"]
 UNAVAILABLE_CONNECTORS = {"ascend_ex"}
 
+PAIR_FORMAT = re.compile(r"^[A-Z0-9]+-[A-Z0-9]+$")
+
+
+def _is_valid_pair(pair):
+    """Hummingbot candle feeds split pairs on '-', so only BASE-QUOTE is accepted."""
+    return bool(PAIR_FORMAT.match(pair))
+
+
+def _candles_error(trading_pair, connector, raw_error):
+    """Translate raw exchange/API errors into a message a user can act on."""
+    error = str(raw_error).lower()
+    if "not enough values to unpack" in error or "invalid pair format" in error:
+        return f"{trading_pair} is not in BASE-QUOTE format. Enter it like USDT-INR or BTC-USDT."
+    if "invalid symbol" in error or "-1121" in error or "not found" in error or "unknown symbol" in error:
+        return f"{trading_pair} is not available on {connector}. Check the pair name or pick another exchange."
+    if "no historical data" in error:
+        return f"No candles found for {trading_pair} in the selected date range."
+    if "429" in error or "too many requests" in error or "rate limit" in error:
+        return f"{connector} is rate limiting requests. Please wait a minute and try again."
+    if "timeout" in error or "timed out" in error:
+        return f"The request for {trading_pair} timed out. Try a shorter date range or try again later."
+    if "connect" in error or "503" in error or "502" in error or "unavailable" in error:
+        return f"Could not reach {connector} right now. Please try again later."
+    return f"Could not fetch candles for {trading_pair} on {connector}."
+
 
 def _safe_filename_part(value):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_") or "unknown"
+
+
+def _build_sheet_names(pairs):
+    """Map each pair to a unique name. Excel sheet names have a 31-character limit and cannot contain certain characters."""
+    names = {}
+    used_names = set()
+    for pair in pairs:
+        sheet_name = re.sub(r"[\[\]:*?/\\]", "_", pair)[:31]
+        base_name, suffix = sheet_name, 2
+        while sheet_name in used_names:
+            sheet_name = f"{base_name[:28]}_{suffix}"
+            suffix += 1
+        used_names.add(sheet_name)
+        names[pair] = sheet_name
+    return names
+
+
+def _build_all_pairs_downloads(candles_by_pair, connector, date_range):
+    """Build (zip_bytes, xlsx_bytes)."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for pair, df in candles_by_pair.items():
+            file_name = f"{_safe_filename_part(connector)}_{_safe_filename_part(pair)}_{date_range}.csv"
+            zip_file.writestr(file_name, df.to_csv(index=False))
+
+    sheet_names = _build_sheet_names(candles_by_pair)
+    xlsx_bytes = dataframes_to_xlsx_bytes({
+        sheet_names[pair]: df.reset_index(drop=True) for pair, df in candles_by_pair.items()
+    })
+    return zip_buffer.getvalue(), xlsx_bytes
 
 
 # Initialize Streamlit page
@@ -31,10 +88,23 @@ if "download_candles__connectors" not in st.session_state:
     st.session_state["download_candles__connectors"] = [c for c in connectors if c not in UNAVAILABLE_CONNECTORS]
 available_connectors = st.session_state["download_candles__connectors"]
 
-c1, c2, c3, c4 = st.columns([2, 2, 2, 0.5])
+# Keep button labels on one line instead of wrapping mid-word in narrow columns
+st.markdown(
+    """
+    <style>
+    div[data-testid="stButton"] button p,
+    div[data-testid="stPopover"] button p {
+        white-space: nowrap;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
 with c1:
     connector = st.selectbox("Exchange", available_connectors, index=0)
-    trading_pair = st.text_input("Trading Pair", value="BTC-USDT")
+    trading_pairs = st.text_input("Trading Pairs (BTC-USDT, ETH-USDT)", value="BTC-USDT")
 with c2:
     intervals_cache = st.session_state.setdefault("download_candles__intervals_by_connector", {})
     if connector not in intervals_cache:
@@ -54,161 +124,165 @@ with c3:
     if not coarse_interval:
         end_time_input = st.time_input("End Time", value=time.max.replace(second=0, microsecond=0), key="end_time")
 with c4:
-    get_data_button = st.button("Get Candles!")
+    get_data_button = st.button("Get Candles", use_container_width=True)
 
 if get_data_button:
     if coarse_interval:
         start_datetime = datetime.combine(start_date, time.min)
-        end_datetime_full = datetime.combine(end_date, time.max)
+        end_datetime = datetime.combine(end_date, time.max)
     else:
         start_datetime = datetime.combine(start_date, start_time_input)
-        end_datetime_full = datetime.combine(end_date, end_time_input)
-    if end_datetime_full < start_datetime:
-        st.error("End Date should be greater than Start Date.")
-        st.stop()
-    end_datetime = min(end_datetime_full, datetime.now())
+        end_datetime = datetime.combine(end_date, end_time_input)
+    typed_pairs = [p.strip().upper() for p in trading_pairs.split(",") if p.strip()]
 
-    start_ts = int(start_datetime.timestamp())
-    end_ts = int(end_datetime.timestamp())
-    utc_start = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')
-    utc_end = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')
+    def _pair_key(pair):
+        return re.sub(r"[^A-Z0-9]", "", pair)
 
-    range_caption = (
-        f"Requested UTC range: `{datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}` → "
-        f"`{datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
-    )
-    try:
-        candles = backend_api_client.market_data.get_historical_candles(
-            connector_name=connector,
-            trading_pair=trading_pair,
-            interval=interval,
-            start_time=start_ts,
-            end_time=end_ts,
-        )
-    except aiohttp.ClientResponseError as e:
-        st.error(
-            f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {e.message or e.status}\n\n"
-            f"Requested UTC range: `{utc_start}` -> `{utc_end}`\n\n"
-            "Tip: Try a shorter date range."
-        )
-        st.stop()
-    except Exception as e:
-        st.error(
-            f"Failed to download candles for **{connector}** / **{trading_pair}** / **{interval}**: {e}\n\n"
-            f"Requested UTC range: `{utc_start}` -> `{utc_end}`"
-        )
-        st.stop()
+    valid_by_key = {}
+    for typed_pair in typed_pairs:
+        if _is_valid_pair(typed_pair):
+            valid_by_key.setdefault(_pair_key(typed_pair), typed_pair)
 
-    def show_backend_error(err):
-        st.error(
-            f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {err}\n\n"
-            f"Requested UTC range: `{utc_start}` -> `{utc_end}`\n\n"
-            "Tip: Try a shorter date range."
-        )
-        st.stop()
-
-    try:
-        candles = backend_api_client.market_data.get_historical_candles(
-            connector_name=connector,
-            trading_pair=trading_pair,
-            interval=interval,
-            start_time=start_ts,
-            end_time=end_ts,
-        )
-    except aiohttp.ClientConnectorError:
-        st.error(
-            f"Can't reach the backend API for **{connector}** / **{trading_pair}** / **{interval}**.\n\n"
-            "The backend server appears to be down or unreachable. Confirm it's running and retry."
-        )
-        st.stop()
-    except TimeoutError:
-        st.error(
-            f"Backend request timed out for **{connector}** / **{trading_pair}** / **{interval}**.\n\n"
-            f"{range_caption}\n\n"
-            "Tip: Try a shorter date range or a coarser interval — large 1m/5m ranges take longer to fetch."
-        )
-        st.stop()
-    except aiohttp.ClientResponseError as e:
-        st.error(
-            f"Backend returned HTTP {e.status} for **{connector}** / **{trading_pair}** / **{interval}**: {e.message}\n\n"
-            f"{range_caption}"
-        )
-        st.stop()
-    except Exception as e:
-        st.error(
-            f"Unexpected error fetching candles for **{connector}** / **{trading_pair}** / **{interval}**: "
-            f"{type(e).__name__}: {e}\n\n"
-            f"{range_caption}"
-        )
-        st.stop()
-
-    if isinstance(candles, dict):
-        if candles.get("status") == "success":
-            candles = candles.get("data", [])
-        elif "error" in candles:
-            show_backend_error(str(candles["error"]))
-        elif "data" in candles:
-            candles = candles["data"]
-        elif "error" in candles:
-            err = str(candles["error"])
-            st.error(
-                f"Backend error for **{connector}** / **{trading_pair}** / **{interval}**: {err}\n\n"
-                f"{range_caption}\n\n"
-                "Tip: Try a shorter date range."
-            )
-            st.stop()
+    pairs_list = []
+    duplicate_messages = []
+    format_errors = []
+    handled = set()
+    for typed_pair in typed_pairs:
+        key = _pair_key(typed_pair)
+        canonical = valid_by_key.get(key)
+        if canonical is None:
+            if typed_pair not in handled:
+                format_errors.append((typed_pair, "invalid pair format"))
+                handled.add(typed_pair)
+            continue
+        if typed_pair == canonical and canonical not in pairs_list:
+            pairs_list.append(canonical)
+            continue
+        if typed_pair in handled:
+            continue
+        handled.add(typed_pair)
+        if typed_pair == canonical:
+            duplicate_messages.append(f"{typed_pair} was entered more than once.")
         else:
-            st.error(f"Unexpected response from server: {candles}")
-            st.stop()
-    if not candles:
-        st.warning("No candle data returned for the selected parameters.")
+            duplicate_messages.append(f"{typed_pair} is the same as {canonical}.")
+
+    if end_datetime <= start_datetime:
+        st.error("End date and time should be after the start date and time.")
+        st.stop()
+    if not pairs_list:
+        if format_errors:
+            st.error("Please enter trading pairs in BASE-QUOTE format, e.g. USDT-INR, BTC-USDT.")
+        else:
+            st.error("Please enter at least one trading pair.")
         st.stop()
 
-    try:
+    candles_by_pair = {}
+    errors = list(format_errors)
+    progress = st.progress(0.0, text="Fetching candles...")
+    for i, trading_pair in enumerate(pairs_list):
+        progress.progress(i / len(pairs_list), text=f"Fetching candles for {trading_pair}...")
+        try:
+            candles = backend_api_client.market_data.get_historical_candles(
+                connector_name=connector,
+                trading_pair=trading_pair,
+                interval=interval,
+                start_time=int(start_datetime.timestamp()),
+                end_time=int(end_datetime.timestamp())
+            )
+        except Exception as e:
+            errors.append((trading_pair, str(e)))
+            continue
+
+        if isinstance(candles, dict) and "error" in candles:
+            errors.append((trading_pair, str(candles["error"])))
+            continue
+        if not candles:
+            errors.append((trading_pair, "No historical data available"))
+            continue
+
         candles_df = pd.DataFrame(candles)
-        local_tz = datetime.now().astimezone().tzinfo
-        candles_df.index = pd.to_datetime(candles_df["timestamp"], unit='s', utc=True).dt.tz_convert(local_tz)
-        missing_cols = [c for c in ("open", "high", "low", "close") if c not in candles_df.columns]
-        if missing_cols:
-            raise KeyError(f"response rows are missing expected column(s): {missing_cols}")
-    except Exception as e:
-        st.error(
-            f"Backend returned candle data in an unexpected shape for **{connector}** / **{trading_pair}** / "
-            f"**{interval}**: {type(e).__name__}: {e}\n\n"
-            f"{range_caption}\n\n"
-            f"First row received: `{candles[0] if candles else 'n/a'}`"
-        )
-        st.stop()
+        candles_df.index = pd.to_datetime(candles_df["timestamp"], unit='s')
+        candles_by_pair[trading_pair] = candles_df
+    progress.empty()
 
-    # Plotting the candlestick chart
-    fig = go.Figure(data=[go.Candlestick(
-        x=candles_df.index,
-        open=candles_df['open'],
-        high=candles_df['high'],
-        low=candles_df['low'],
-        close=candles_df['close']
-    )])
-    fig.update_layout(
-        height=1000,
-        title="Candlesticks",
-        xaxis_title="Time",
-        yaxis_title="Price",
-        template="plotly_dark",
-        showlegend=False
-    )
-    fig.update_xaxes(rangeslider_visible=False)
-    fig.update_yaxes(title_text="Price")
-    st.plotly_chart(fig, use_container_width=True)
+    st.session_state["download_candles__result"] = {
+        "connector": connector,
+        "start_date": start_date,
+        "end_date": end_date,
+        "candles_by_pair": candles_by_pair,
+        "errors": errors,
+        "duplicate_messages": duplicate_messages,
+    }
 
-    # Generating CSV and download button
-    csv = candles_df.to_csv(index=False)
-    filename = (
-        f"{_safe_filename_part(connector)}_{_safe_filename_part(trading_pair)}_"
-        f"{start_datetime.strftime('%Y%m%d%H%M%S')}_{end_datetime.strftime('%Y%m%d%H%M%S')}.csv"
-    )
-    st.download_button(
-        label="Download Candles as CSV",
-        data=csv,
-        file_name=filename,
-        mime='text/csv',
-    )
+result = st.session_state.get("download_candles__result")
+if result:
+    candles_by_pair = result["candles_by_pair"]
+    date_range = f"{result['start_date'].strftime('%Y%m%d')}_{result['end_date'].strftime('%Y%m%d')}"
+
+    if result.get("duplicate_messages"):
+        st.info("Duplicate pairs found:\n- " + "\n- ".join(result["duplicate_messages"]))
+
+    if result["errors"]:
+        st.warning("Some pairs could not be fetched:\n- " + "\n- ".join(
+            _candles_error(pair, result["connector"], raw) for pair, raw in result["errors"]
+        ))
+        with st.expander("More error details"):
+            st.code("\n".join(f"{pair}: {raw}" for pair, raw in result["errors"]), language="text")
+
+    if candles_by_pair:
+        pairs_str = "_".join(_safe_filename_part(p.replace("-", "")) for p in candles_by_pair)
+        all_pairs_filename = f"candles_{_safe_filename_part(result['connector'])}_{pairs_str}_{date_range}"
+        zip_bytes, xlsx_bytes = _build_all_pairs_downloads(candles_by_pair, result["connector"], date_range)
+
+        header_col, download_col = st.columns([3, 1], vertical_alignment="bottom")
+        with header_col:
+            st.subheader("Candles")
+        with download_col:
+            with st.popover("⬇️ Download All", use_container_width=True):
+                st.download_button(
+                    label="Download CSVs as ZIP",
+                    data=zip_bytes,
+                    file_name=f"{all_pairs_filename}.zip",
+                    mime="application/zip",
+                    key="dl_candles_zip",
+                    use_container_width=True,
+                )
+                st.download_button(
+                    label="Download as XLSX",
+                    data=xlsx_bytes,
+                    file_name=f"{all_pairs_filename}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_candles_xlsx",
+                    use_container_width=True,
+                )
+
+        tabs = st.tabs(list(candles_by_pair.keys()))
+        for tab, (trading_pair, candles_df) in zip(tabs, candles_by_pair.items()):
+            with tab:
+                fig = go.Figure(data=[go.Candlestick(
+                    x=candles_df.index,
+                    open=candles_df['open'],
+                    high=candles_df['high'],
+                    low=candles_df['low'],
+                    close=candles_df['close']
+                )])
+                fig.update_layout(
+                    height=1000,
+                    title=f"{trading_pair} Candlesticks",
+                    xaxis_title="Time",
+                    yaxis_title="Price",
+                    template="plotly_dark",
+                    showlegend=False
+                )
+                fig.update_xaxes(rangeslider_visible=False)
+                fig.update_yaxes(title_text="Price")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Generating CSV and download button
+                st.download_button(
+                    label=f"Download {trading_pair} Candles as CSV",
+                    data=candles_df.to_csv(index=False),
+                    file_name=f"{result['connector']}_{trading_pair}_{date_range}.csv",
+                    mime='text/csv',
+                    key=f"dl_candles_{trading_pair}",
+                )
