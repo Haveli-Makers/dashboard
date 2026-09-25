@@ -88,7 +88,6 @@ if "download_candles__connectors" not in st.session_state:
     st.session_state["download_candles__connectors"] = [c for c in connectors if c not in UNAVAILABLE_CONNECTORS]
 available_connectors = st.session_state["download_candles__connectors"]
 
-# Keep button labels on one line instead of wrapping mid-word in narrow columns
 st.markdown(
     """
     <style>
@@ -136,10 +135,8 @@ if get_data_button:
     typed_pairs = [p.strip().upper() for p in trading_pairs.split(",") if p.strip()]
 
     def _pair_key(pair):
-        # ETH-USDT, eth-usdt and ETHUSDT all map to the same key
         return re.sub(r"[^A-Z0-9]", "", pair)
 
-    # The first correctly formatted spelling of each pair is the one that gets fetched
     valid_by_key = {}
     for typed_pair in typed_pairs:
         if _is_valid_pair(typed_pair):
@@ -237,7 +234,6 @@ if result:
         all_pairs_filename = f"candles_{_safe_filename_part(result['connector'])}_{pairs_str}_{date_range}"
         zip_bytes, xlsx_bytes = _build_all_pairs_downloads(candles_by_pair, result["connector"], date_range)
 
-        # Fills its column so the right edge lines up with the Get Candles button above
         header_col, download_col = st.columns([3, 1], vertical_alignment="bottom")
         with header_col:
             st.subheader("Candles")
