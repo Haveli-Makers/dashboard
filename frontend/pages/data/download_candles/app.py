@@ -88,7 +88,6 @@ if "download_candles__connectors" not in st.session_state:
     st.session_state["download_candles__connectors"] = [c for c in connectors if c not in UNAVAILABLE_CONNECTORS]
 available_connectors = st.session_state["download_candles__connectors"]
 
-# Keep button labels on one line instead of wrapping mid-word in narrow columns
 st.markdown(
     """
     <style>
