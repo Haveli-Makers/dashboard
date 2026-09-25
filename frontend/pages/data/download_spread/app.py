@@ -58,7 +58,7 @@ SUPPORTED_EXCHANGES = [
     "huobi",
     "coindcx",
     "wazirx",
-    "coin_switch",
+    "coinswitch",
     "zebpay",
     "coinex",
     "valr",
