@@ -20,6 +20,7 @@ dependencies:
       - defillama
       - statsmodels
       - pyyaml
+      - openpyxl
       - pathlib
       - streamlit-authenticator==0.3.2
       - flake8

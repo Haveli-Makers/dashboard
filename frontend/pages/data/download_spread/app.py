@@ -1,10 +1,51 @@
+import asyncio
 import datetime
+import io
+import re
+import threading
 import traceback
+import uuid
+import zipfile
 
 import pandas as pd
 import streamlit as st
 
+from api_client.client import HummingbotAPIClient
+
+from frontend.email_utils import (
+    SAMPLES_EMAIL_BODY_TEMPLATE,
+    SAMPLES_EMAIL_SUBJECT_TEMPLATE,
+    SPREAD_EMAIL_BODY_TEMPLATE,
+    SPREAD_EMAIL_SUBJECT_TEMPLATE,
+    build_samples_email_context,
+    build_spread_email_context,
+    dataframes_to_xlsx_bytes,
+    is_smtp_configured,
+    parse_recipients,
+    render_template,
+    send_email_with_xlsx,
+)
 from frontend.st_utils import get_backend_api_client, initialize_st_page
+
+
+def _fragment(run_every=None):
+    real_fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+    if real_fragment is None:
+        def _identity(func):
+            return func
+        return _identity
+    try:
+        return real_fragment(run_every=run_every)
+    except TypeError:
+        return real_fragment
+
+
+def _rerun_app():
+    try:
+        st.rerun(scope="app")
+    except TypeError:
+        st.rerun()
+
 
 SUPPORTED_EXCHANGES = [
     "binance",
@@ -22,6 +63,394 @@ SUPPORTED_EXCHANGES = [
     "coinex",
     "valr",
 ]
+
+
+def _build_sheet_specs(frames_by_pair):
+    specs = []
+    used_names = set()
+    for pair_connector, pair_name in frames_by_pair:
+        sheet_name = re.sub(r"[\[\]:*?/\\]", "_", f"{pair_connector}_{pair_name}")[:31]
+        base_name, suffix = sheet_name, 2
+        while sheet_name in used_names:
+            sheet_name = f"{base_name[:28]}_{suffix}"
+            suffix += 1
+        used_names.add(sheet_name)
+        specs.append((sheet_name, pair_connector, pair_name))
+    return specs
+
+
+def _safe_filename_part(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_") or "unknown"
+
+
+def _format_timestamp_column(df):
+    if "timestamp" not in df.columns:
+        return df
+
+    formatted_df = df.copy()
+    local_tz = datetime.datetime.now().astimezone().tzinfo
+    formatted_df["timestamp"] = (
+        pd.to_datetime(formatted_df["timestamp"], unit="s", utc=True)
+        .dt.tz_convert(local_tz)
+        .dt.strftime("%Y-%m-%d %H:%M:%S")
+    )
+    return formatted_df
+
+
+BACKEND_MAX_PAGE_LIMIT = 10000
+
+
+def _sample_limit_for_row(sample_count_option):
+    if sample_count_option != "All":
+        return int(sample_count_option)
+    return BACKEND_MAX_PAGE_LIMIT
+
+
+DB_REQUEST_CONCURRENCY = 8
+
+
+def _fetch_spread_samples_bulk(client, requests, include_total_count=False, on_progress=None):
+    """Fetch raw spread samples for many (connector, pair, offset) pages at once."""
+    base_url = getattr(client, "_base_url", "http://localhost:8000")
+    username = getattr(client, "_username", "admin")
+    password = getattr(client, "_password", "admin")
+    reqs = [(req[0], req[1], req[2], req[3] if len(req) > 3 else 0) for req in requests]
+    total_requests = len(reqs)
+    progress_state = {"completed": 0}
+    box = {}
+
+    def _worker():
+        async def _run():
+            api = HummingbotAPIClient(base_url, username, password)
+            await api.init()
+            semaphore = asyncio.Semaphore(DB_REQUEST_CONCURRENCY)
+            try:
+                async def _one(connector, pair, limit, offset):
+                    async with semaphore:
+                        try:
+                            resp = await api.market_data.get_spread_data(
+                                pair=pair,
+                                connector=connector,
+                                limit=limit,
+                                offset=offset,
+                                include_total_count=include_total_count,
+                            )
+                            return (connector, pair, offset), resp
+                        except Exception as exc:
+                            return (connector, pair, offset), exc
+                        finally:
+                            progress_state["completed"] += 1
+
+                results = await asyncio.gather(*(_one(c, p, lim, off) for c, p, lim, off in reqs))
+                return dict(results)
+            finally:
+                await api.close()
+
+        try:
+            box["result"] = asyncio.run(_run())
+        except Exception as exc:  # surfaced to the caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_worker, name="spread-samples-fetch", daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if on_progress is not None:
+            on_progress(progress_state["completed"], total_requests)
+        worker.join(timeout=0.2)
+
+    if on_progress is not None:
+        on_progress(total_requests, total_requests)
+
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
+async def _fetch_pair_all_pages(api, semaphore, connector, pair, before_timestamp, cancel_event, on_page):
+    """Keyset-page through every sample for one pair older than ``before_timestamp``."""
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        async with semaphore:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            resp = await api.market_data.get_spread_data(
+                pair=pair,
+                connector=connector,
+                limit=BACKEND_MAX_PAGE_LIMIT,
+                before_timestamp=before_timestamp,
+                include_total_count=False,
+            )
+        data = resp.get("data") if resp else None
+        if not data:
+            return
+
+        page_df = pd.DataFrame(data)
+        page_df["connector"] = connector
+        page_df["pair"] = pair
+        other_cols = [c for c in page_df.columns if c not in ("connector", "pair")]
+        on_page(connector, pair, _format_timestamp_column(page_df[["connector", "pair"] + other_cols]))
+
+        if not resp.get("has_more"):
+            return
+        before_timestamp = int(data[-1]["timestamp"])
+
+
+def _fetch_all_spread_samples(client, pair_cursors, on_progress=None, cancel_event=None):
+    """Fetch every page older than each pair's cursor."""
+    pair_cursors = list(pair_cursors)
+    if not pair_cursors:
+        return {}
+
+    base_url = getattr(client, "_base_url", "http://localhost:8000")
+    username = getattr(client, "_username", "admin")
+    password = getattr(client, "_password", "admin")
+
+    pages_by_pair = {(connector, pair): [] for connector, pair, _cursor in pair_cursors}
+    progress_state = {"completed": 0}
+    box = {}
+
+    def _worker():
+        async def _run():
+            api = HummingbotAPIClient(base_url, username, password)
+            await api.init()
+            semaphore = asyncio.Semaphore(DB_REQUEST_CONCURRENCY)
+            errors = {}
+
+            def _on_page(connector, pair, page_df):
+                pages_by_pair[(connector, pair)].append(page_df)
+                progress_state["completed"] += 1
+
+            async def _run_pair(connector, pair, before_timestamp):
+                try:
+                    await _fetch_pair_all_pages(
+                        api, semaphore, connector, pair, before_timestamp, cancel_event, _on_page
+                    )
+                except Exception as exc:  # noqa: BLE001 - surfaced to the caller below
+                    errors[(connector, pair)] = exc
+
+            try:
+                await asyncio.gather(*(
+                    _run_pair(connector, pair, before_timestamp)
+                    for connector, pair, before_timestamp in pair_cursors
+                ))
+            finally:
+                await api.close()
+            return errors
+
+        try:
+            box["errors"] = asyncio.run(_run())
+        except Exception as exc:  # noqa: BLE001 - surfaced to the caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_worker, name="spread-samples-fetch-all", daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if on_progress is not None:
+            on_progress(progress_state["completed"], None)
+        worker.join(timeout=0.2)
+
+    if "error" in box:
+        raise box["error"]
+    errors = box.get("errors") or {}
+    if errors:
+        raise next(iter(errors.values()))
+
+    return {
+        key: pd.concat(frames, ignore_index=True)
+        for key, frames in pages_by_pair.items()
+        if frames
+    }
+
+
+FULL_DOWNLOAD_JOB_TTL_SECONDS = 30 * 60
+FULL_DOWNLOAD_MAX_JOBS = 20
+
+
+@st.cache_resource
+def _full_download_registry():
+    return {"lock": threading.Lock(), "jobs": {}}
+
+
+def _sweep_full_download_registry_locked(jobs):
+    """Drop finished jobs that are stale or over the registry cap. Caller holds the lock."""
+    now = datetime.datetime.now().timestamp()
+    for job_id, job in list(jobs.items()):
+        if job["status"] in ("done", "error") and now - job.get("finished_at", now) > FULL_DOWNLOAD_JOB_TTL_SECONDS:
+            jobs.pop(job_id, None)
+
+    if len(jobs) <= FULL_DOWNLOAD_MAX_JOBS:
+        return
+    finished = sorted(
+        (job_id for job_id, job in jobs.items() if job["status"] in ("done", "error")),
+        key=lambda job_id: jobs[job_id].get("finished_at", 0),
+    )
+    for job_id in finished[: len(jobs) - FULL_DOWNLOAD_MAX_JOBS]:
+        jobs.pop(job_id, None)
+
+
+def _get_full_download_job(job_id):
+    if not job_id:
+        return None
+    registry = _full_download_registry()
+    with registry["lock"]:
+        job = registry["jobs"].get(job_id)
+        return {k: v for k, v in job.items() if k != "cancel_event"} if job is not None else None
+
+
+def _discard_full_download_job(job_id):
+    registry = _full_download_registry()
+    with registry["lock"]:
+        job = registry["jobs"].pop(job_id, None)
+        if job is not None:
+            job["cancel_event"].set()
+
+
+def _start_full_download_job(client, truncated_pairs, first_page_frames):
+    registry = _full_download_registry()
+    job_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+    total_estimate = sum(
+        max(0, -(-(int(total_count) - len(first_page_frames.get((connector, pair), []))) // BACKEND_MAX_PAGE_LIMIT))
+        for connector, pair, total_count, _cursor in truncated_pairs
+    )
+    with registry["lock"]:
+        _sweep_full_download_registry_locked(registry["jobs"])
+        registry["jobs"][job_id] = {
+            "status": "running",
+            "phase": "fetching",
+            "completed": 0,
+            "total": total_estimate,
+            "result": None,
+            "error": None,
+            "finished_at": None,
+            "cancel_event": cancel_event,
+        }
+
+    def _on_progress(completed, _total):
+        with registry["lock"]:
+            job = registry["jobs"].get(job_id)
+            if job is not None:
+                job["completed"] = completed
+
+    def _run_job():
+        try:
+            pair_cursors = [
+                (connector, pair, before_timestamp)
+                for connector, pair, _total_count, before_timestamp in truncated_pairs
+            ]
+            full_frames = dict(first_page_frames)
+            for key, df in _fetch_all_spread_samples(
+                client, pair_cursors, on_progress=_on_progress, cancel_event=cancel_event
+            ).items():
+                full_frames[key] = pd.concat([full_frames[key], df], ignore_index=True)
+
+            if cancel_event.is_set():
+                return
+
+            with registry["lock"]:
+                job = registry["jobs"].get(job_id)
+                if job is not None:
+                    job["phase"] = "preparing_files"
+
+            samples_df_full = pd.concat(full_frames.values(), ignore_index=True)
+            sheet_specs_full = tuple(_build_sheet_specs(full_frames))
+            csv_payload, csv_is_zip, xlsx_bytes = _build_download_bytes(samples_df_full, sheet_specs_full)
+
+            result = {
+                "samples_df": samples_df_full,
+                "sheet_specs": sheet_specs_full,
+                "csv_bytes": csv_payload,
+                "csv_is_zip": csv_is_zip,
+                "xlsx_bytes": xlsx_bytes,
+            }
+            with registry["lock"]:
+                job = registry["jobs"].get(job_id)
+                if job is not None:
+                    job["status"] = "done"
+                    job["result"] = result
+                    job["finished_at"] = datetime.datetime.now().timestamp()
+        except Exception as exc:  # noqa: BLE001 - surfaced to the UI via job["error"]
+            if cancel_event.is_set():
+                return
+            with registry["lock"]:
+                job = registry["jobs"].get(job_id)
+                if job is not None:
+                    job["status"] = "error"
+                    job["error"] = str(exc)
+                    job["finished_at"] = datetime.datetime.now().timestamp()
+
+    threading.Thread(target=_run_job, name=f"full-samples-download-{job_id}", daemon=True).start()
+    return job_id
+
+
+def _build_download_bytes(samples_df, sheet_specs):
+    """Build (csv_or_zip_payload, csv_is_zip, xlsx_bytes) for the given samples."""
+    sheets = {
+        name: samples_df[
+            (samples_df["connector"] == conn) & (samples_df["pair"] == pair)
+        ].reset_index(drop=True)
+        for name, conn, pair in sheet_specs
+    }
+
+    if len(sheets) > 1:
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for name, df in sheets.items():
+                zip_file.writestr(f"{name}.csv", df.to_csv(index=False))
+        csv_payload = zip_buffer.getvalue()
+        csv_is_zip = True
+    else:
+        csv_payload = samples_df.to_csv(index=False)
+        csv_is_zip = False
+
+    return csv_payload, csv_is_zip, dataframes_to_xlsx_bytes(sheets)
+
+
+@_fragment(run_every="2s")
+def _render_full_download_progress(job_id, full_cache_key):
+    job = _get_full_download_job(job_id)
+    if job is None:
+        return
+
+    if job["status"] == "running":
+        if job.get("phase") == "preparing_files":
+            st.progress(1.0, text="Fetching complete - preparing CSV/XLSX files...")
+        else:
+            completed, total = job["completed"], job["total"]
+            pct = min(1.0, completed / total) if total else 0.0
+            st.progress(
+                pct,
+                text=f"Fetching all samples... {int(pct * 100)}% ({completed}/{total} pages)",
+            )
+        st.caption(
+            "This keeps fetching in the background even if you switch pages - "
+            "come back here once it's done."
+        )
+    elif job["status"] == "error":
+        st.error(f"Failed to fetch full history: {job['error']}")
+        if st.button("Retry", key="retry_full_samples_download", use_container_width=True):
+            _discard_full_download_job(job_id)
+            st.session_state.pop("download_spread__job_id", None)
+            _rerun_app()
+    elif job["status"] == "done":
+        st.session_state["download_spread__prepared_full"] = {
+            "key": full_cache_key,
+            "samples_df": job["result"]["samples_df"],
+            "sheet_specs": job["result"]["sheet_specs"],
+            "csv_bytes": job["result"]["csv_bytes"],
+            "csv_is_zip": job["result"]["csv_is_zip"],
+            "xlsx_bytes": job["result"]["xlsx_bytes"],
+        }
+        _discard_full_download_job(job_id)
+        st.session_state.pop("download_spread__job_id", None)
+        _rerun_app()
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _build_sample_downloads(samples_df, sheet_specs):
+    return _build_download_bytes(samples_df, sheet_specs)
+
 
 # Initialize Streamlit page
 initialize_st_page(title="Download Spread", icon="📊")
@@ -204,88 +633,358 @@ if "download_spread__spread_df" in st.session_state:
     if failed_pairs:
         st.warning("Some pairs had errors:\n- " + "\n- ".join(failed_pairs))
 
-    st.subheader("Spread Data Details")
-    st.caption("Select a row to expand and view all samples for that trading pair.")
-
+    connectors_str = "_".join(connectors_used)
+    pairs_str = "_".join([p.replace("-", "") for p in pairs_list]) if pairs_list else "all"
     display_df = spread_df.drop(columns=["sample_count"], errors="ignore")
+    spread_csv = display_df.to_csv(index=False)
+    spread_xlsx_filename = f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.xlsx"
+
+    spread_sheets = {}
+    used_spread_sheet_names = set()
+    if "connector" in display_df.columns:
+        for connector_name in display_df["connector"].drop_duplicates():
+            sheet_name = re.sub(r"[\[\]:*?/\\]", "_", str(connector_name))[:31]
+            base_name, suffix = sheet_name, 2
+            while sheet_name in used_spread_sheet_names:
+                sheet_name = f"{base_name[:28]}_{suffix}"
+                suffix += 1
+            used_spread_sheet_names.add(sheet_name)
+            spread_sheets[sheet_name] = display_df[display_df["connector"] == connector_name].reset_index(drop=True)
+    else:
+        spread_sheets["Spread Data"] = display_df
+    if not spread_sheets:
+        spread_sheets["Spread Data"] = display_df
+    spread_xlsx = dataframes_to_xlsx_bytes(spread_sheets)
+
+    header_col, download_col, email_col = st.columns([8, 1, 1])
+    with header_col:
+        st.subheader("Spread Data Details")
+    with download_col:
+        with st.popover("⬇️", use_container_width=True):
+            st.download_button(
+                label="Download as CSV",
+                data=spread_csv,
+                file_name=f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.csv",
+                mime="text/csv",
+                key="dl_spread",
+                use_container_width=True,
+            )
+            st.download_button(
+                label="Download as XLSX",
+                data=spread_xlsx,
+                file_name=spread_xlsx_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_spread_xlsx",
+                use_container_width=True,
+            )
+    with email_col:
+        with st.popover("📧", use_container_width=True):
+            if not is_smtp_configured():
+                st.info(
+                    "SMTP is not configured. Set SMTP_HOST, SMTP_USERNAME and SMTP_PASSWORD "
+                    "in the `.env` file to enable emailing."
+                )
+            recipients_raw = st.text_input(
+                "Recipient email(s)",
+                placeholder="alice@example.com, bob@example.com",
+                key="spread_email_recipients",
+            )
+            if st.button("Send Email", key="send_spread_email", use_container_width=True):
+                try:
+                    recipients, invalid_recipients = parse_recipients(recipients_raw)
+                    if invalid_recipients:
+                        st.error(f"Invalid recipient email address(es): {', '.join(invalid_recipients)}")
+                    elif not recipients:
+                        st.error("Please enter at least one valid recipient email address.")
+                    else:
+                        email_context = build_spread_email_context(
+                            connectors=connectors_used,
+                            pairs=pairs_list,
+                            window_hours=window_hours_used,
+                            row_count=len(display_df),
+                            failed_count=len(failed_pairs),
+                        )
+                        email_subject = render_template(SPREAD_EMAIL_SUBJECT_TEMPLATE, email_context)
+                        email_body = render_template(SPREAD_EMAIL_BODY_TEMPLATE, email_context)
+                        with st.spinner("Sending email..."):
+                            send_email_with_xlsx(
+                                to_emails=recipients,
+                                subject=email_subject,
+                                body=email_body,
+                                attachment_bytes=spread_xlsx,
+                                attachment_filename=spread_xlsx_filename,
+                            )
+                        st.success(f"Email sent to {', '.join(recipients)}")
+                except Exception as email_err:
+                    st.error(f"Failed to send email: {str(email_err)}")
+
+    st.caption("Tick one or more rows, choose how many spreads, then click **Fetch Samples**.")
+
     selection = st.dataframe(
         display_df,
         use_container_width=True,
-        selection_mode="single-row",
+        selection_mode="multi-row",
         on_select="rerun",
         key="spread_summary_table",
     )
 
-    connectors_str = "_".join(connectors_used)
-    pairs_str = "_".join([p.replace("-", "") for p in pairs_list]) if pairs_list else "all"
-    spread_csv = display_df.to_csv(index=False)
-    st.download_button(
-        label="Download Spread Data as CSV",
-        data=spread_csv,
-        file_name=f"spread_{connectors_str}_{pairs_str}_{window_hours_used}h.csv",
-        mime="text/csv",
-        key="dl_spread",
-    )
-
-    # Expand raw samples when a row is selected
     selected_rows = selection.selection.rows if selection.selection else []
+    selected_rows = [row for row in selected_rows if row < len(spread_df)]
+
+    just_deselected = bool(st.session_state.get("download_spread__prev_selected_rows")) and not selected_rows
+    st.session_state["download_spread__prev_selected_rows"] = selected_rows
+
     if selected_rows:
-        selected_idx = selected_rows[0]
-        row = spread_df.iloc[selected_idx]
-        selected_pair = row["pair"]
-        selected_connector = row["connector"]
+        selected_pairs_df = spread_df.iloc[selected_rows].reset_index(drop=True)
+    elif just_deselected:
+        selected_pairs_df = None
+    else:
+        _cached_for_fallback = st.session_state.get("download_spread__samples")
+        selected_pairs_df = _cached_for_fallback["selected_pairs_df"] if _cached_for_fallback else None
 
-        col1, col2 = st.columns([8, 1])
+    if selected_pairs_df is None or selected_pairs_df.empty:
+        st.session_state.pop("download_spread__samples", None)
+    else:
+        selected_keys = "_".join(
+            f"{r['connector']}-{r['pair']}" for _, r in selected_pairs_df.iterrows()
+        )
 
+        col1, col2, col3 = st.columns([6, 1.3, 1.3], vertical_alignment="bottom")
         with col1:
-            st.subheader(f"Samples — {selected_connector} / {selected_pair}")
-
+            st.subheader("Samples for the selected Pairs")
         with col2:
             sample_count_option = st.selectbox(
                 "Number of spreads",
                 options=["All", "10", "100", "200", "500", "1000"],
                 index=0,  # Default to All
-                key=f"spread_sample_count_{selected_connector}_{selected_pair}",
-                label_visibility="collapsed"
+                key="spread_sample_count",
+                label_visibility="collapsed",
+            )
+        with col3:
+            fetch_samples_clicked = st.button(
+                "Fetch Samples", use_container_width=True, key="fetch_samples_btn"
             )
 
-        if sample_count_option == "All":
-            selected_sample_count = pd.to_numeric(row.get("sample_count"), errors="coerce")
-            sample_limit = int(selected_sample_count) if pd.notna(selected_sample_count) else 100000
-        else:
-            sample_limit = int(sample_count_option)
+        if fetch_samples_clicked:
+            sample_limit = _sample_limit_for_row(sample_count_option)
+            want_total = sample_count_option == "All"
+            fetch_requests = [
+                (row["connector"], row["pair"], sample_limit)
+                for _, row in selected_pairs_df.iterrows()
+            ]
 
-
-        with st.spinner(f"Fetching samples for {selected_pair} on {selected_connector}..."):
-            try:
-                samples_response = backend_api_client.market_data.get_spread_data(
-                    pair=selected_pair,
-                    connector=selected_connector,
-                    limit=sample_limit
-                )
-                if samples_response and samples_response.get("data"):
-                    samples_df = pd.DataFrame(samples_response["data"])
-                    if "timestamp" in samples_df.columns:
-                        local_tz = datetime.datetime.now().astimezone().tzinfo
-                        samples_df["timestamp"] = pd.to_datetime(
-                            samples_df["timestamp"], unit="s", utc=True).dt.tz_convert(local_tz).dt.strftime("%Y-%m-%d %H:%M:%S")
-                    total_samples = samples_response.get("total_count", samples_response.get("count", len(samples_df)))
-
-                    st.dataframe(
-                        samples_df,
-                        use_container_width=True,
-                        key=f"spread_samples_table_{selected_connector}_{selected_pair}_{sample_count_option}",
+            with st.spinner("Fetching samples..."):
+                try:
+                    bulk_samples = _fetch_spread_samples_bulk(
+                        backend_api_client, fetch_requests, include_total_count=want_total
                     )
-                    st.caption(f"Showing {len(samples_df)} of {total_samples} samples available")
-                    samples_csv = samples_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Samples as CSV",
-                        data=samples_csv,
-                        file_name=f"samples_{selected_connector}_{selected_pair.replace('-', '')}_{window_hours_used}h.csv",
-                        mime="text/csv",
-                        key="dl_samples",
+                except Exception as bulk_err:  # noqa: BLE001
+                    bulk_samples = {(c, p, 0): bulk_err for c, p, _lim in fetch_requests}
+
+            fetched_frames = {}
+            fetch_errors = []
+            fetched_total = 0
+            pair_totals = []
+            for f_connector, f_pair, _lim in fetch_requests:
+                resp = bulk_samples.get((f_connector, f_pair, 0))
+                if isinstance(resp, Exception):
+                    fetch_errors.append(
+                        f"Failed to fetch samples for {f_pair} on {f_connector}: {resp}"
                     )
+                    continue
+                pair_total_count = int(resp.get("total_count") or 0) if resp else 0
+                fetched_total += pair_total_count
+                if resp and resp.get("data"):
+                    pair_samples_df = pd.DataFrame(resp["data"])
+                    pair_samples_df["connector"] = f_connector
+                    pair_samples_df["pair"] = f_pair
+                    other_cols = [c for c in pair_samples_df.columns if c not in ("connector", "pair")]
+                    pair_samples_df = pair_samples_df[["connector", "pair"] + other_cols]
+                    pair_samples_df = _format_timestamp_column(pair_samples_df)
+                    fetched_frames[(f_connector, f_pair)] = pair_samples_df
+                    if want_total and pair_total_count > len(pair_samples_df):
+                        oldest_timestamp = int(resp["data"][-1]["timestamp"])
+                        pair_totals.append((f_connector, f_pair, pair_total_count, oldest_timestamp))
                 else:
-                    st.info("No raw samples found for this trading pair.")
-            except Exception as samples_err:
-                st.error(f"Failed to fetch samples: {str(samples_err)}")
+                    fetch_errors.append(f"No raw samples found for {f_pair} on {f_connector}.")
+
+            st.session_state["download_spread__samples"] = {
+                "keys": selected_keys,
+                "sample_count_option": sample_count_option,
+                "samples_df": (
+                    pd.concat(fetched_frames.values(), ignore_index=True) if fetched_frames else None
+                ),
+                "sheet_specs": tuple(_build_sheet_specs(fetched_frames)),
+                "truncated_pairs": tuple(pair_totals),
+                "selected_pairs_df": selected_pairs_df,
+                "total_available": fetched_total,
+                "errors": fetch_errors,
+                "window_hours_used": window_hours_used,
+            }
+            st.session_state.pop("download_spread__prepared_full", None)
+            _discard_full_download_job(st.session_state.pop("download_spread__job_id", None))
+            st.session_state.pop("download_spread__job_key", None)
+
+        cached_samples = st.session_state.get("download_spread__samples")
+        selection_matches = (
+            bool(cached_samples)
+            and cached_samples.get("keys") == selected_keys
+            and cached_samples.get("sample_count_option") == sample_count_option
+        )
+        if not selection_matches:
+            st.info("Click ***Fetch Samples*** to load samples for the current selection.")
+
+        samples_errors = cached_samples["errors"] if selection_matches else []
+        if samples_errors:
+            st.warning("\n\n".join(samples_errors))
+
+        samples_df = cached_samples["samples_df"] if selection_matches else None
+
+        if samples_df is not None and not samples_df.empty:
+            selected_pairs_df = cached_samples["selected_pairs_df"]
+            sample_count_option = cached_samples["sample_count_option"]
+            total_available = cached_samples["total_available"]
+            sheet_specs = cached_samples["sheet_specs"]
+            truncated_pairs = cached_samples.get("truncated_pairs") or ()
+
+            samples_header_col, samples_download_col, samples_email_col = st.columns([6, 1, 1])
+            with samples_header_col:
+                if sample_count_option == "All" and total_available:
+                    caption = (
+                        f"Showing {len(samples_df)} of {total_available} samples "
+                        f"(full history) across {len(selected_pairs_df)} pair(s)"
+                    )
+                    if truncated_pairs:
+                        caption += " (preview capped at 10,000/pair - use Download to fetch everything)"
+                    st.caption(caption)
+                else:
+                    st.caption(f"Showing {len(samples_df)} samples across {len(selected_pairs_df)} pair(s)")
+
+            st.dataframe(
+                samples_df,
+                use_container_width=True,
+                key=f"spread_samples_table_{cached_samples['keys']}_{sample_count_option}",
+            )
+
+            selected_connectors_str = "_".join(
+                _safe_filename_part(c) for c in sorted(selected_pairs_df["connector"].unique().tolist())
+            )
+            selected_pairs_str = "_".join(
+                _safe_filename_part(p.replace("-", "")) for p in sorted(selected_pairs_df["pair"].unique().tolist())
+            )
+            samples_xlsx_filename = f"samples_{selected_connectors_str}_{selected_pairs_str}.xlsx"
+
+            full_cache_key = (cached_samples["keys"], sample_count_option)
+            prepared_full = st.session_state.get("download_spread__prepared_full")
+            if prepared_full and prepared_full.get("key") != full_cache_key:
+                prepared_full = None
+            needs_full_fetch = bool(truncated_pairs) and prepared_full is None
+
+            with samples_download_col:
+                with st.popover("⬇️", use_container_width=True):
+                    if needs_full_fetch:
+                        job_id = st.session_state.get("download_spread__job_id")
+                        job_key_matches = st.session_state.get("download_spread__job_key") == full_cache_key
+                        active_job = job_id if (job_id and job_key_matches and _get_full_download_job(job_id)) else None
+
+                        if active_job is None:
+                            st.caption(
+                                f"Only the {len(samples_df)}-row preview has been fetched "
+                                f"({total_available} total). Fetch everything to download it all."
+                            )
+                            if st.button(
+                                "Fetch all & prepare download",
+                                key="prepare_full_samples_download",
+                                use_container_width=True,
+                            ):
+                                first_page_frames = {
+                                    (conn, pair): samples_df[
+                                        (samples_df["connector"] == conn) & (samples_df["pair"] == pair)
+                                    ].reset_index(drop=True)
+                                    for _name, conn, pair in sheet_specs
+                                }
+                                new_job_id = _start_full_download_job(
+                                    backend_api_client, truncated_pairs, first_page_frames
+                                )
+                                st.session_state["download_spread__job_id"] = new_job_id
+                                st.session_state["download_spread__job_key"] = full_cache_key
+                                st.rerun()
+                        else:
+                            _render_full_download_progress(active_job, full_cache_key)
+
+                    if not needs_full_fetch:
+                        if prepared_full:
+                            download_samples_df = prepared_full["samples_df"]
+                            samples_csv = prepared_full["csv_bytes"]
+                            samples_csv_is_zip = prepared_full["csv_is_zip"]
+                            samples_xlsx = prepared_full["xlsx_bytes"]
+                        else:
+                            download_samples_df = samples_df
+                            samples_csv, samples_csv_is_zip, samples_xlsx = _build_sample_downloads(
+                                samples_df, sheet_specs
+                            )
+
+                        csv_extension = "zip" if samples_csv_is_zip else "csv"
+                        csv_mime = "application/zip" if samples_csv_is_zip else "text/csv"
+                        csv_label = "Download CSVs as ZIP" if samples_csv_is_zip else "Download as CSV"
+
+                        st.download_button(
+                            label=csv_label,
+                            data=samples_csv,
+                            file_name=(
+                                f"samples_{selected_connectors_str}_{selected_pairs_str}"
+                                f".{csv_extension}"
+                            ),
+                            mime=csv_mime,
+                            key="dl_samples_csv",
+                            use_container_width=True,
+                        )
+                        st.download_button(
+                            label="Download as XLSX",
+                            data=samples_xlsx,
+                            file_name=samples_xlsx_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_samples_xlsx",
+                            use_container_width=True,
+                        )
+            with samples_email_col:
+                with st.popover("📧", use_container_width=True):
+                    if needs_full_fetch:
+                        st.info("Fetch the full data from the ⬇️ download popover first, then come back to email it.")
+                    else:
+                        if not is_smtp_configured():
+                            st.info(
+                                "SMTP is not configured. Set SMTP_HOST, SMTP_USERNAME and SMTP_PASSWORD "
+                                "in the `.env` file to enable emailing."
+                            )
+                        samples_recipients_raw = st.text_input(
+                            "Recipient email(s)",
+                            placeholder="alice@example.com, bob@example.com",
+                            key="samples_email_recipients",
+                        )
+                        if st.button("Send Email", key="send_samples_email", use_container_width=True):
+                            try:
+                                samples_recipients, invalid_samples_recipients = parse_recipients(samples_recipients_raw)
+                                if invalid_samples_recipients:
+                                    st.error(f"Invalid recipient email address(es): {', '.join(invalid_samples_recipients)}")
+                                elif not samples_recipients:
+                                    st.error("Please enter at least one valid recipient email address.")
+                                else:
+                                    samples_email_context = build_samples_email_context(
+                                        connectors=sorted(selected_pairs_df["connector"].unique().tolist()),
+                                        pairs=sorted(selected_pairs_df["pair"].unique().tolist()),
+                                        row_count=len(download_samples_df),
+                                    )
+                                    samples_email_subject = render_template(SAMPLES_EMAIL_SUBJECT_TEMPLATE, samples_email_context)
+                                    samples_email_body = render_template(SAMPLES_EMAIL_BODY_TEMPLATE, samples_email_context)
+                                    with st.spinner("Sending email..."):
+                                        send_email_with_xlsx(
+                                            to_emails=samples_recipients,
+                                            subject=samples_email_subject,
+                                            body=samples_email_body,
+                                            attachment_bytes=samples_xlsx,
+                                            attachment_filename=samples_xlsx_filename,
+                                        )
+                                    st.success(f"Email sent to {', '.join(samples_recipients)}")
+                            except Exception as samples_email_err:
+                                st.error(f"Failed to send email: {str(samples_email_err)}")
