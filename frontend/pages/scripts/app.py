@@ -120,6 +120,10 @@ def render_config_inputs(config_template, prefix="config", overrides=None):
         if "prompt" not in field_info or field_info.get("show_on_dashboard") is False:
             continue
         default = overrides.get(field_name, field_info.get("default")) if overrides else field_info.get("default")
+        visible_when = field_info.get("visible_when") or {}
+        if any(str(config.get(other, "")) not in [str(v) for v in values] for other, values in visible_when.items()):
+            config[field_name] = default
+            continue
         annotation = field_info.get("annotation", "")
         prompt = field_info.get("prompt", field_name)
 
