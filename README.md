@@ -50,70 +50,55 @@ For more detailed instructions on how to install and update the dashboard, refer
 
 ## Authentication
 
-Authentication is disabled by default. To enable Dashboard Authentication please follow the steps below: 
+`AUTH_SYSTEM_ENABLED` now defaults to `True` (it previously defaulted to `False`). If you run the dashboard from source without setting this environment variable, and without the Google OAuth secrets described below, the dashboard will require login but have no way to authenticate — locking everyone out.
 
-**Set Credentials (Optional):**
+The `docker-compose.yml` in this repo already pins `AUTH_SYSTEM_ENABLED=False` explicitly, so existing Docker deployments using it are **not** affected until you opt in. If you deploy from source or from a different compose/env file, add `AUTH_SYSTEM_ENABLED=False` to your environment until you've completed the setup below.
 
-The dashboard uses `admin` and `abc` as the default username and password respectively. It's strongly recommended to change these credentials for enhanced security.:
+Authentication now uses Streamlit's built-in Google SSO (`st.login`/`st.logout`). The previous username/password system (`credentials.yml`) has been removed.
 
-- For Docker, navigate to the `deploy` folder or `dashboard` folder if using Source and open the `credentials.yml` file.
-- Add or modify the current username / password and save the changes afterward
-  
-  ```
-  credentials:
-    usernames:
-      admin:
-        email: admin@gmail.com
-        name: John Doe
-        logged_in: False
-        password: abc
-  cookie:
-    expiry_days: 0
-    key: some_signature_key # Must be string
-    name: some_cookie_name
-  pre-authorized:
-    emails:
-    - admin@admin.com
-  ```  
+**Setup:**
+
+1. Create `.streamlit/secrets.toml` (git-ignored, never commit this file) with:
+   ```toml
+   [auth]
+   redirect_uri = "http://localhost:8501/oauth2callback"
+   cookie_secret = "<a-random-secret-string>"
+
+   [auth.google]
+   client_id = "<your-google-oauth-client-id>"
+   client_secret = "<your-google-oauth-client-secret>"
+   server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+   ```
+   Create the OAuth client credentials in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials), with `redirect_uri` added as an authorized redirect URI.
+2. Set the relevant environment variables:
+   - `AUTH_SYSTEM_ENABLED=True` — require login to use the dashboard.
+   - `GOOGLE_SSO_ENABLED` — defaults to `True`; set to `False` to hide the Google sign-in button.
+   - `GOOGLE_ALLOWED_DOMAIN` — defaults to `havelimakers.com`; restricts sign-in to that Google Workspace domain (leave empty to allow any Google account).
 
 ### Docker
 
 - Ensure the dashboard container is not running.
-- Open the `docker-compose.yml` file within the `deploy` folder using a text editor.
-- Locate the environment variable `AUTH_SYSTEM_ENABLED` under the dashboard service configuration.
-  
-  ```
-  services:
-  dashboard:
-    container_name: dashboard
-    image: hummingbot/dashboard:latest
-    ports:
-      - "8501:8501"
-    environment:
-        - AUTH_SYSTEM_ENABLED=True
-        - BACKEND_API_HOST=backend-api
-        - BACKEND_API_PORT=8000
-  ```
-- Change the value of `AUTH_SYSTEM_ENABLED` from `False` to `True`.
-- Save the changes to the `docker-compose.yml` file.
-- Relaunch Dashboard by running `bash setup.sh`
-  
-### Source 
+- In `docker-compose.yml`, set `AUTH_SYSTEM_ENABLED=True` under the dashboard service's `environment` block.
+- Make sure `.streamlit/secrets.toml` (see above) is present in the mounted dashboard directory.
+- Relaunch Dashboard by running `bash setup.sh`.
 
-- Open the `CONFIG.py` file located in the dashboard root folder
-- Locate the line `AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "False").lower() in ("true", "1", "t")`.
-  
+### Source
+
+- Open the `CONFIG.py` file located in the dashboard root folder.
+- Locate the line `AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "True").lower() in ("true", "1", "t")`.
+
   ```
   CERTIFIED_EXCHANGES = ["ascendex", "binance", "bybit", "gate.io", "hitbtc", "huobi", "kucoin", "okx", "gateway"]
   CERTIFIED_STRATEGIES = ["xemm", "cross exchange market making", "pmm", "pure market making"]
-  
-  AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "False").lower() in ("true", "1", "t")
-  
+
+  AUTH_SYSTEM_ENABLED = os.getenv("AUTH_SYSTEM_ENABLED", "True").lower() in ("true", "1", "t")
+
   BACKEND_API_HOST = os.getenv("BACKEND_API_HOST", "127.0.0.1")
   ```
-- Change the value from `False` to `True` to enable dashboard authentication.
-- Save the CONFIG.py file.
-- Relaunch dashboard by running `make run`
+- Authentication is now enabled by default, so you shouldn't need to change this line. If you want to disable it instead, set `AUTH_SYSTEM_ENABLED=False` in your environment (or `.env` file) rather than editing the default here.
+- Make sure `.streamlit/secrets.toml` (see above) exists in the dashboard root folder.
+- Save the CONFIG.py file if you made changes.
+- Relaunch dashboard by running `make run`.
 
 ### Known Issues
 - Refreshing the browser window may log you out and display the login screen again. This is a known issue that might be addressed in future updates.
