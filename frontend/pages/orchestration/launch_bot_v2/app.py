@@ -104,6 +104,23 @@ def filter_hummingbot_images(images):
     return filtered_images
 
 
+def get_profile_connectors(account_name):
+    """List connector credentials (e.g. 'coindcx', 'zebpay__zebpay_org1') stored in a credentials profile."""
+    if not account_name:
+        return []
+    try:
+        return sorted(backend_api_client.accounts.list_account_credentials(account_name))
+    except Exception as e:
+        st.error(f"Failed to fetch connectors for {account_name}: {e}")
+        return []
+
+
+def format_connector_label(connector_key):
+    """Show 'zebpay__zebpay_org1' as 'zebpay (zebpay_org1)'."""
+    connector, _, account = connector_key.partition("__")
+    return f"{connector} ({account})" if account else connector
+
+
 def get_available_bot_images():
     """Return preferred bot images and fall back to all images when the filter has no matches."""
     all_images = normalize_image_options(backend_api_client.docker.get_available_images(""))
@@ -116,6 +133,7 @@ def launch_new_bot(
         image_name,
         credentials,
         deployment_type,
+        selected_connectors=None,
         selected_controllers=None,
         selected_script=None,
         selected_script_config=None,
@@ -136,6 +154,9 @@ def launch_new_bot(
     if deployment_type == DEPLOYMENT_TYPE_SCRIPT and not selected_script:
         st.warning("You need to select the script to deploy.")
         return False
+    if deployment_type == DEPLOYMENT_TYPE_SCRIPT and not selected_connectors:
+        st.warning("You need to select at least one connector.")
+        return False
     st.info(f"🚀 Launching new bot with name: {bot_name}, image: {image_name}")
 
     start_time_str = time.strftime("%Y%m%d-%H%M")
@@ -143,12 +164,12 @@ def launch_new_bot(
 
     try:
         if deployment_type == DEPLOYMENT_TYPE_SCRIPT:
-            backend_api_client.scripts.import_community_script(selected_script, override=True)
             deploy_config = {
                 "instance_name": full_bot_name,
                 "credentials_profile": credentials,
                 "script": selected_script,
                 "image": image_name,
+                "connectors": selected_connectors,
             }
             if selected_script_config:
                 deploy_config["script_config"] = selected_script_config
@@ -188,7 +209,7 @@ st.subheader("Configure and deploy your automated trading strategy")
 with st.container(border=True):
     st.info("🤖 **Bot Configuration:** Set up your bot instance with basic configuration")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col_connectors, col3, col4 = st.columns(5)
 
     with col1:
         bot_name = st.text_input(
@@ -213,6 +234,30 @@ with st.container(border=True):
                 value="master_account",
                 key="credentials_input",
             )
+
+    # Filled before col_connectors so the connector input can depend on the deployment type
+    with col4:
+        deployment_type = st.selectbox(
+            "Deployment Type",
+            options=[DEPLOYMENT_TYPE_CONTROLLERS, DEPLOYMENT_TYPE_SCRIPT],
+            index=0,
+            help="Choose whether to deploy controller configs or a script.",
+            key="deployment_type_select",
+        )
+
+    selected_connectors = None
+    if deployment_type == DEPLOYMENT_TYPE_SCRIPT:
+        with col_connectors:
+            profile_connectors = get_profile_connectors(credentials)
+            selected_connectors = st.multiselect(
+                "Connector",
+                options=profile_connectors,
+                format_func=format_connector_label,
+                help="Only these credentials are copied into the bot. Pick the exchange(s) your script trades on.",
+                key=f"connectors_select_{credentials}",
+            )
+            if not profile_connectors:
+                st.caption("No connector credentials in this profile.")
 
     with col3:
         try:
@@ -239,15 +284,6 @@ with st.container(border=True):
                 value="havelimakers:latest",
                 key="image_input",
             )
-
-    with col4:
-        deployment_type = st.selectbox(
-            "Deployment Type",
-            options=[DEPLOYMENT_TYPE_CONTROLLERS, DEPLOYMENT_TYPE_SCRIPT],
-            index=0,
-            help="Choose whether to deploy controller configs or a script.",
-            key="deployment_type_select",
-        )
 
 if deployment_type == DEPLOYMENT_TYPE_CONTROLLERS:
     with st.container(border=True):
@@ -431,6 +467,7 @@ else:
                             image_name,
                             credentials,
                             deployment_type,
+                            selected_connectors=selected_connectors,
                             selected_script=selected_script,
                             selected_script_config=selected_script_config,
                     ):

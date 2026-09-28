@@ -174,7 +174,8 @@ class BotOrchestrationRouter(BaseRouter):
             script: Optional[str] = None,
             script_config: Optional[str] = None,
             image: str = "hummingbot/hummingbot:latest",
-            headless: bool = False
+            headless: bool = False,
+            connectors: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Creates and autostarts a script-based Hummingbot instance.
@@ -189,6 +190,8 @@ class BotOrchestrationRouter(BaseRouter):
             script_deployment["script"] = script
         if script_config is not None:
             script_deployment["script_config"] = script_config
+        if connectors:
+            script_deployment["connectors"] = connectors
 
         return await self._post("/bot-orchestration/deploy-script", json=script_deployment)
 
