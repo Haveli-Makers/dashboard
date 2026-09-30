@@ -11,7 +11,7 @@ from streamlit.errors import StreamlitAuthError
 from yaml import SafeLoader
 
 from CONFIG import AUTH_SYSTEM_ENABLED, GOOGLE_ALLOWED_DOMAIN, GOOGLE_SSO_ENABLED
-from frontend.pages.permissions import main_page, private_pages, public_pages
+from frontend.pages.permissions import filter_sections, main_page, private_pages, public_pages
 
 
 def initialize_st_page(title: Optional[str] = None, icon: str = "🤖", layout: Layout = 'wide',
@@ -104,13 +104,6 @@ def render_server_selector():
         st.session_state.selected_server_name = server_names[0]
 
     def _on_server_change():
-        if 'backend_api_client' in st.session_state:
-            try:
-                if st.session_state.backend_api_client is not None:
-                    st.session_state.backend_api_client.__exit__(None, None, None)
-            except Exception:
-                pass
-            st.session_state.backend_api_client = None
         st.session_state.selected_server_name = st.session_state._server_selector
         st.cache_data.clear()
 
@@ -185,8 +178,9 @@ def get_backend_api_client():
     username = server.get('username', 'admin')
     password = server.get('password', 'admin')
 
-    # Use Streamlit session state to store singleton instance
-    if 'backend_api_client' not in st.session_state or st.session_state.backend_api_client is None:
+    clients = st.session_state.setdefault('backend_api_clients', {})
+    client_key = server.get('name', f"{host}:{port}")
+    if clients.get(client_key) is None:
         try:
             # Create and enter the client context
             # Ensure URL has proper protocol
@@ -203,31 +197,19 @@ def get_backend_api_client():
             # Initialize the client using context manager
             client.__enter__()
 
-            # Register cleanup function to properly exit the context manager
-            def cleanup_client():
-                _close_backend_api_client(client)
-                if st.session_state.get('backend_api_client') is client:
-                    st.session_state.backend_api_client = None
-
-            # Register cleanup with atexit and session state
-            atexit.register(_close_backend_api_client, client)
-            if 'cleanup_registered' not in st.session_state:
-                st.session_state.cleanup_registered = True
-                # Also register cleanup for session state changes
-                st.session_state.backend_api_client_cleanup = cleanup_client
-
             # Check Docker after initialization
             if not client.docker.is_running():
                 st.error("Docker is not running. Please make sure Docker is running.")
-                cleanup_client()  # Clean up before stopping
+                _close_backend_api_client(client)  # Clean up before stopping
                 st.stop()
 
-            st.session_state.backend_api_client = client
+            atexit.register(_close_backend_api_client, client)
+            clients[client_key] = client
         except Exception as e:
             st.error(f"Failed to initialize API client: {str(e)}")
             st.stop()
 
-    return st.session_state.backend_api_client
+    return clients[client_key]
 
 
 def _clear_google_auth_state():
@@ -245,11 +227,11 @@ def auth_system():
     visible_sections = _get_selected_server().get('visible_sections')
     if not AUTH_SYSTEM_ENABLED:
         render_server_selector()
-        return {
+        return filter_sections({
             "Main": main_page(),
-            **private_pages(visible_sections),
+            **private_pages(),
             **public_pages(),
-        }
+        }, visible_sections)
 
     _sync_google_login()
 
@@ -259,11 +241,11 @@ def auth_system():
             sign_out()
 
         st.sidebar.write(f'Welcome *{st.session_state.get("name", st.session_state.get("username", "User"))}*')
-        return {
+        return filter_sections({
             "Main": main_page(),
-            **private_pages(visible_sections),
+            **private_pages(),
             **public_pages(),
-        }
+        }, visible_sections)
 
     return {
         "Login": [st.Page("frontend/pages/login.py", title="Sign in", icon="🔒", url_path="login")],

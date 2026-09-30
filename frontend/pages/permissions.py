@@ -27,8 +27,15 @@ def public_pages():
     }
 
 
-def private_pages(visible_sections=None):
-    pages = {
+def filter_sections(pages, visible_sections=None):
+    if visible_sections is None:
+        return pages
+    filtered = {k: v for k, v in pages.items() if k in visible_sections}
+    return filtered or {"Main": main_page()}
+
+
+def private_pages():
+    return {
         "Accounts": [
             st.Page(
                 "frontend/pages/orchestration/credentials/app.py",
@@ -84,6 +91,3 @@ def private_pages(visible_sections=None):
             ),
         ],
     }
-    if visible_sections is None:
-        return pages
-    return {k: v for k, v in pages.items() if k in visible_sections}
