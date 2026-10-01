@@ -116,12 +116,32 @@ def strip_trailing_parenthetical(prompt, explicit_options=None):
     return label
 
 
+def is_field_visible(field_info, config_template, config, overrides=None):
+    """Evaluate a field's visible_when conditions against the values chosen so far."""
+    for other_field, allowed_values in (field_info.get("visible_when") or {}).items():
+        if other_field in config:
+            current = config[other_field]
+        elif overrides and other_field in overrides:
+            current = overrides[other_field]
+        else:
+            current = config_template.get(other_field, {}).get("default")
+        if str(current) not in [str(v) for v in allowed_values]:
+            return False
+    return True
+
+
 def render_config_inputs(config_template, prefix="config", overrides=None):
     config = {}
     for field_name, field_info in config_template.items():
         if "prompt" not in field_info or field_info.get("show_on_dashboard") is False:
             continue
+        if not is_field_visible(field_info, config_template, config, overrides):
+            continue
         default = overrides.get(field_name, field_info.get("default")) if overrides else field_info.get("default")
+        visible_when = field_info.get("visible_when") or {}
+        if any(str(config.get(other, "")) not in [str(v) for v in values] for other, values in visible_when.items()):
+            config[field_name] = default
+            continue
         annotation = field_info.get("annotation", "")
         prompt = field_info.get("prompt", field_name)
 
