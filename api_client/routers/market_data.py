@@ -7,6 +7,27 @@ class MarketDataRouter(BaseRouter):
     """Market Data router for real-time and historical market data."""
 
     # Candles Operations
+    async def get_available_candle_connectors(self) -> List[str]:
+        """
+        Get the list of connectors that support candle data feeds.
+
+        Returns:
+            List of connector names that can be used for fetching candle data
+        """
+        return await self._get("/market-data/available-candle-connectors")
+
+    async def get_candle_intervals(self, connector: str) -> List[str]:
+        """
+        Get the list of candle intervals supported by a given connector.
+
+        Args:
+            connector: Connector name as returned by get_available_candle_connectors()
+
+        Returns:
+            List of interval strings (e.g. ["1m", "5m", "1h", "1d"]) supported by the connector
+        """
+        return await self._get(f"/market-data/candle-intervals/{connector}")
+
     async def get_candles(
         self,
         connector_name: str,
@@ -434,7 +455,10 @@ class MarketDataRouter(BaseRouter):
         self,
         pair: str,
         connector: str,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        offset: int = 0,
+        before_timestamp: Optional[int] = None,
+        include_total_count: bool = False,
     ) -> Dict[str, Any]:
         """
         Get raw spread samples from database for a specific connector and trading pair.
@@ -442,7 +466,16 @@ class MarketDataRouter(BaseRouter):
         Args:
             pair: Trading pair filter (e.g., "BTC-USDT")
             connector: Connector filter (e.g., "binance")
-            limit: Maximum number of spread samples to return 
+            limit: Maximum number of spread samples to return (server caps this at 10,000
+                per request; use ``offset`` or ``before_timestamp`` to page past that)
+            offset: Number of matching rows to skip before returning results.
+                Ignored by the server when ``before_timestamp`` is given.
+            before_timestamp: Keyset cursor - only rows strictly older than this
+                timestamp are returned. Prefer this over ``offset`` when paging
+                through many pages, since it does not shift under concurrently
+                inserted rows.
+            include_total_count: When True, the response also carries an exact
+                ``total_count`` of all matching samples across full history
 
         Returns:
             Dictionary with spread data samples and count
@@ -451,6 +484,17 @@ class MarketDataRouter(BaseRouter):
             # Get spread data for specific pair and connector
             data = await client.market_data.get_spread_data(pair="BTC-USDT", connector="binance")
         """
-        params = {"limit": limit} if limit is not None else None
-        return await self._get(f"/market-data/spread-data/{connector}/{pair}", params=params)
+        params = {}
+        if limit is not None:
+            params["limit"] = int(limit)
+        if before_timestamp is not None:
+            params["before_timestamp"] = int(before_timestamp)
+        elif offset:
+            params["offset"] = int(offset)
+        if include_total_count:
+            params["include_total_count"] = "true"
+        return await self._get(
+            f"/market-data/spread-data/{connector}/{pair}",
+            params=params or None,
+        )
 
