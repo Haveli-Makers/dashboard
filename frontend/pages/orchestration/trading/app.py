@@ -5,6 +5,7 @@ import nest_asyncio
 import pandas as pd
 import streamlit as st
 
+from frontend.components.price_chart import show_price_chart_dialog
 from frontend.st_utils import get_backend_api_client, initialize_st_page
 
 # Enable nested async
@@ -937,7 +938,12 @@ def show_trading_data():
     ob_col, trade_col = st.columns([1, 1])
 
     with ob_col:
-        st.subheader("📊 Order Book")
+        ob_title_col, chart_btn_col = st.columns([3, 1], vertical_alignment="bottom")
+        with ob_title_col:
+            st.subheader("📊 Order Book")
+        with chart_btn_col:
+            if st.button("📈 Price Chart", use_container_width=True, key="open_price_chart"):
+                show_price_chart_dialog(backend_api_client, connector, trading_pair)
         render_coindcx_orderbook(order_book, current_price, trading_pair)
 
     with trade_col:
