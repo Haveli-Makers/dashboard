@@ -2,12 +2,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.st_utils import get_backend_api_client, get_currency_symbol, initialize_st_page
 
 initialize_st_page(title="Portfolio", icon="💰")
 
 # Page content
 client = get_backend_api_client()
+CURRENCY = get_currency_symbol()
 NUM_COLUMNS = 4
 
 
@@ -203,7 +204,7 @@ def portfolio_overview():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total Balance (USD)", f"${total_balance_usd:,.2f}")
+        st.metric(f"Total Balance ({CURRENCY})", f"{CURRENCY}{total_balance_usd:,.2f}")
     
     with col2:
         st.metric("Accounts", len(selected_accounts))
@@ -220,7 +221,7 @@ def portfolio_overview():
     with c1:
         # Portfolio allocation pie chart
         portfolio_df['% Allocation'] = (portfolio_df['value'] / total_balance_usd) * 100
-        portfolio_df['label'] = portfolio_df['token'] + ' ($' + portfolio_df['value'].apply(
+        portfolio_df['label'] = portfolio_df['token'] + f' ({CURRENCY}' + portfolio_df['value'].apply(
             lambda x: f'{x:,.2f}') + ')'
         
         fig = px.sunburst(portfolio_df,
@@ -244,7 +245,7 @@ def portfolio_overview():
                      title='Token Distribution',
                      color='value',
                      color_continuous_scale='Blues')
-        fig.update_layout(xaxis_title='Token', yaxis_title='Value (USD)', height=600)
+        fig.update_layout(xaxis_title='Token', yaxis_title=f'Value ({CURRENCY})', height=600)
         st.plotly_chart(fig, use_container_width=True)
     
     # Portfolio details table
@@ -323,7 +324,7 @@ def portfolio_history():
     fig = px.area(account_evolution_df, x='timestamp', y='value', color='account', 
                   title='Portfolio Value Evolution by Account',
                   color_discrete_sequence=px.colors.qualitative.Set3)
-    fig.update_layout(xaxis_title='Time', yaxis_title='Value (USD)', height=400)
+    fig.update_layout(xaxis_title='Time', yaxis_title=f'Value ({CURRENCY})', height=400)
     st.plotly_chart(fig, use_container_width=True)
     
     # Portfolio evolution by token (area chart)  
@@ -338,7 +339,7 @@ def portfolio_history():
     fig = px.area(token_evolution_filtered, x='timestamp', y='value', color='token', 
                   title='Portfolio Value Evolution by Token (Top 10)',
                   color_discrete_sequence=px.colors.qualitative.Vivid)
-    fig.update_layout(xaxis_title='Time', yaxis_title='Value (USD)', height=400)
+    fig.update_layout(xaxis_title='Time', yaxis_title=f'Value ({CURRENCY})', height=400)
     st.plotly_chart(fig, use_container_width=True)
     
     # Portfolio evolution by exchange (area chart)
@@ -349,7 +350,7 @@ def portfolio_history():
     fig = px.area(exchange_evolution_df, x='timestamp', y='value', color='exchange', 
                   title='Portfolio Value Evolution by Exchange',
                   color_discrete_sequence=px.colors.qualitative.Pastel)
-    fig.update_layout(xaxis_title='Time', yaxis_title='Value (USD)', height=400)
+    fig.update_layout(xaxis_title='Time', yaxis_title=f'Value ({CURRENCY})', height=400)
     st.plotly_chart(fig, use_container_width=True)
     
     # Portfolio evolution table - total values
@@ -359,7 +360,7 @@ def portfolio_history():
     evolution_table = total_evolution_df.copy()
     evolution_table['timestamp'] = evolution_table['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
     evolution_table['value'] = evolution_table['value'].round(2)
-    evolution_table = evolution_table.rename(columns={'timestamp': 'Time', 'value': 'Total Value (USD)'})
+    evolution_table = evolution_table.rename(columns={'timestamp': 'Time', 'value': f'Total Value ({CURRENCY})'})
     st.dataframe(evolution_table, use_container_width=True)
 
 

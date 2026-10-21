@@ -3,12 +3,13 @@ import time
 import pandas as pd
 import streamlit as st
 
-from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.st_utils import get_backend_api_client, get_currency_symbol, initialize_st_page
 
 initialize_st_page(icon="🦅", show_readme=False)
 
 # Initialize backend client
 backend_api_client = get_backend_api_client()
+CURRENCY = get_currency_symbol()
 
 # Initialize session state for auto-refresh
 if "auto_refresh_enabled" not in st.session_state:
@@ -183,10 +184,10 @@ def render_bot_card(bot_name):
                             "Controller": controller_name,
                             "Connector": connector_name,
                             "Trading Pair": trading_pair,
-                            "Realized PNL ($)": round(realized_pnl_quote, 2),
-                            "Unrealized PNL ($)": round(unrealized_pnl_quote, 2),
-                            "NET PNL ($)": round(global_pnl_quote, 2),
-                            "Volume ($)": round(volume_traded, 2),
+                            f"Realized PNL ({CURRENCY})": round(realized_pnl_quote, 2),
+                            f"Unrealized PNL ({CURRENCY})": round(unrealized_pnl_quote, 2),
+                            f"NET PNL ({CURRENCY})": round(global_pnl_quote, 2),
+                            f"Volume ({CURRENCY})": round(volume_traded, 2),
                             "Close Types": close_types_str,
                             "_controller_id": controller
                         }
@@ -206,13 +207,13 @@ def render_bot_card(bot_name):
                     col1, col2, col3, col4 = st.columns(4)
 
                     with col1:
-                        st.metric("🏦 NET PNL", f"${total_global_pnl_quote:.2f}")
+                        st.metric("🏦 NET PNL", f"{CURRENCY}{total_global_pnl_quote:.2f}")
                     with col2:
-                        st.metric("💹 Unrealized PNL", f"${total_unrealized_pnl_quote:.2f}")
+                        st.metric("💹 Unrealized PNL", f"{CURRENCY}{total_unrealized_pnl_quote:.2f}")
                     with col3:
                         st.metric("📊 NET PNL (%)", f"{total_global_pnl_pct:.2%}")
                     with col4:
-                        st.metric("💸 Volume Traded", f"${total_volume_traded:.2f}")
+                        st.metric("💸 Volume Traded", f"{CURRENCY}{total_volume_traded:.2f}")
 
                     # Active Controllers
                     if active_controllers:

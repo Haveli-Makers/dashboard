@@ -6,7 +6,7 @@ import streamlit as st
 from hummingbot.core.data_type.common import TradeType
 
 from backend.utils.performance_data_source import PerformanceDataSource
-from frontend.st_utils import download_csv_button, get_backend_api_client
+from frontend.st_utils import download_csv_button, get_backend_api_client, get_currency_symbol
 from frontend.visualization.backtesting import create_backtesting_figure
 from frontend.visualization.backtesting_metrics import render_accuracy_metrics, render_backtesting_metrics
 from frontend.visualization.performance_time_evolution import create_combined_subplots
@@ -24,6 +24,7 @@ intervals_to_secs = {
 
 
 def display_performance_summary_table(executors, executors_with_orders: pd.DataFrame):
+    CURRENCY = get_currency_symbol()
     if not executors_with_orders.empty:
         executors.sort_values("close_timestamp", inplace=True)
         executors["net_pnl_over_time"] = executors["net_pnl_quote"].cumsum()
@@ -50,9 +51,9 @@ def display_performance_summary_table(executors, executors_with_orders: pd.DataF
             format_duration
         )
         grouped_executors["filled_amount_quote_sum"] = grouped_executors["filled_amount_quote"].apply(
-            lambda x: f"$ {x:.2f}"
+            lambda x: f"{CURRENCY} {x:.2f}"
         )
-        grouped_executors["net_pnl_quote"] = grouped_executors["net_pnl_quote"].apply(lambda x: f"$ {x:.2f}")
+        grouped_executors["net_pnl_quote"] = grouped_executors["net_pnl_quote"].apply(lambda x: f"{CURRENCY} {x:.2f}")
         grouped_executors.rename(columns={"datetime": "start_datetime_utc",
                                           "id": "total_executors"}, inplace=True)
         all_pnl_values = [value for sublist in grouped_executors["net_pnl_over_time"] for value in sublist]
@@ -73,8 +74,8 @@ def display_performance_summary_table(executors, executors_with_orders: pd.DataF
                          "controller_id": st.column_config.TextColumn("Controller ID"),
                          "controller_type": st.column_config.TextColumn("Controller Type"),
                          "total_executors": st.column_config.NumberColumn("Total Positions"),
-                         "filled_amount_quote": st.column_config.NumberColumn("Total Volume", format="$ %.2f"),
-                         "net_pnl_quote": st.column_config.NumberColumn("Net PnL", format="$ %.2f"),
+                         "filled_amount_quote": st.column_config.NumberColumn("Total Volume", format=f"{CURRENCY} %.2f"),
+                         "net_pnl_quote": st.column_config.NumberColumn("Net PnL", format=f"{CURRENCY} %.2f"),
                          "duration": st.column_config.TextColumn("Duration")
                      })
 
@@ -118,6 +119,7 @@ def fetch_global_results(executors_dict: List[Dict[str, Any]]):
 def display_side_analysis(data_source: PerformanceDataSource,
                           current_filter: Dict[str, Any] = None,
                           is_long: bool = True):
+    CURRENCY = get_currency_symbol()
     side_filter = current_filter.copy()
     side_filter["side"] = [TradeType.BUY] if is_long else [TradeType.SELL]
     executors_dict = data_source.get_executor_dict(side_filter,
@@ -129,7 +131,7 @@ def display_side_analysis(data_source: PerformanceDataSource,
         st.write(f"### {side_str} Positions")
         col1, col2, col3 = st.columns(3)
         col1.metric(label="Net PnL (Quote)", value=f"{results['net_pnl_quote']:.2f}")
-        col2.metric(label="Max Drawdown (USD)", value=f"{results['max_drawdown_usd']:.2f}")
+        col2.metric(label=f"Max Drawdown ({CURRENCY})", value=f"{results['max_drawdown_usd']:.2f}")
         col3.metric(label="Total Volume (Quote)", value=f"{results['total_volume']:.2f}")
         col1.metric(label="Sharpe Ratio", value=f"{results['sharpe_ratio']:.2f}")
         col2.metric(label="Profit Factor", value=f"{results['profit_factor']:.2f}")
@@ -264,6 +266,7 @@ def performance_section(results: dict, fig=None, title: str = "Backtesting Metri
 
 
 def display_executors_by_close_type_metrics(executors_df):
+    CURRENCY = get_currency_symbol()
     executors_by_close_type = executors_df.groupby("close_type_name")["net_pnl_quote"].sum().to_dict()
     keys_to_remove = ["EXPIRED", "INSUFFICIENT_BALANCE"]
     for key in keys_to_remove:
@@ -272,7 +275,7 @@ def display_executors_by_close_type_metrics(executors_df):
     columns = st.columns(len(executors_by_close_type))
     for i, (key, value) in enumerate(executors_by_close_type.items()):
         with columns[i]:
-            st.metric(label=key, value=f"${value:.2f}")
+            st.metric(label=key, value=f"{CURRENCY}{value:.2f}")
 
 
 def display_tables_section(data_source: PerformanceDataSource):

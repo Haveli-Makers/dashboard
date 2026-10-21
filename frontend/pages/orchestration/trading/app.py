@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.st_utils import get_backend_api_client, get_currency_symbol, initialize_st_page
 
 # Enable nested async
 nest_asyncio.apply()
@@ -19,6 +19,7 @@ initialize_st_page(
 
 # Initialize backend client
 backend_api_client = get_backend_api_client()
+CURRENCY = get_currency_symbol()
 
 # Initialize session state
 if "selected_account" not in st.session_state:
@@ -385,7 +386,7 @@ def create_candlestick_chart(candles_data, connector_name="", trading_pair="", i
                     name='Volume',
                     marker=dict(color=colors),
                     yaxis='y2',
-                    hovertemplate='Volume: $%{y:,.0f}<br>%{x}<extra></extra>'
+                    hovertemplate=f'Volume: {CURRENCY}%{{y:,.0f}}<br>%{{x}}<extra></extra>'
                 ),
                 row=2, col=1
             )
@@ -433,7 +434,7 @@ def create_candlestick_chart(candles_data, connector_name="", trading_pair="", i
                                             line=dict(width=1, color='white')
                                         ),
                                         name='Buy Trades',
-                                        hovertemplate='<b>BUY</b><br>Price: $%{y:.4f}<br>Time: %{x}<extra></extra>'
+                                        hovertemplate=f'<b>BUY</b><br>Price: {CURRENCY}%{{y:.4f}}<br>Time: %{{x}}<extra></extra>'
                                     ),
                                     row=1, col=1
                                 )
@@ -451,7 +452,7 @@ def create_candlestick_chart(candles_data, connector_name="", trading_pair="", i
                                             line=dict(width=1, color='white')
                                         ),
                                         name='Sell Trades',
-                                        hovertemplate='<b>SELL</b><br>Price: $%{y:.4f}<br>Time: %{x}<extra></extra>'
+                                        hovertemplate=f'<b>SELL</b><br>Price: {CURRENCY}%{{y:.4f}}<br>Time: %{{x}}<extra></extra>'
                                     ),
                                     row=1, col=1
                                 )
@@ -474,7 +475,7 @@ def create_candlestick_chart(candles_data, connector_name="", trading_pair="", i
                 "color": "white"
             },
             "yaxis": {
-                "title": "Price ($)",
+                "title": f"Price ({CURRENCY})",
                 "showgrid": True,
                 "gridcolor": "rgba(255,255,255,0.1)",
                 "color": "white"
@@ -579,7 +580,7 @@ def create_order_book_chart(order_book_data, current_price=None, depth_percentag
                     orientation='h',
                     name='Bids',
                     marker=dict(opacity=0.8),
-                    hovertemplate='<b>BID</b><br>Price: $%{y:.4f}<br>Cumulative Volume: $%{x:,.0f}<br>Level Volume: $%{customdata:,.0f}<extra></extra>',
+                    hovertemplate=f'<b>BID</b><br>Price: {CURRENCY}%{{y:.4f}}<br>Cumulative Volume: {CURRENCY}%{{x:,.0f}}<br>Level Volume: {CURRENCY}%{{customdata:,.0f}}<extra></extra>',
                     customdata=bids_df['quote_volume'],  # Show individual level volume in hover
                     offsetgroup='bids'
                 )
@@ -594,7 +595,7 @@ def create_order_book_chart(order_book_data, current_price=None, depth_percentag
                     orientation='h',
                     name='Asks',
                     marker=dict(opacity=0.8),
-                    hovertemplate='<b>ASK</b><br>Price: $%{y:.4f}<br>Cumulative Volume: $%{x:,.0f}<br>Level Volume: $%{customdata:,.0f}<extra></extra>',
+                    hovertemplate=f'<b>ASK</b><br>Price: {CURRENCY}%{{y:.4f}}<br>Cumulative Volume: {CURRENCY}%{{x:,.0f}}<br>Level Volume: {CURRENCY}%{{customdata:,.0f}}<extra></extra>',
                     customdata=asks_df['quote_volume'],  # Show individual level volume in hover
                     offsetgroup='asks'
                 )
@@ -613,7 +614,7 @@ def create_order_book_chart(order_book_data, current_price=None, depth_percentag
                 "zerolinewidth": 1
             },
             "yaxis": {
-                "title": "Price ($)",
+                "title": f"Price ({CURRENCY})",
                 "color": "white",
                 "showgrid": True,
                 "gridcolor": "rgba(255,255,255,0.1)",
@@ -678,7 +679,7 @@ def render_positions_table(positions_data):
         total_unrealized_pnl = df['unrealized_pnl'].sum() if 'unrealized_pnl' in df.columns else 0
         st.metric(
             "Total Unrealized PnL",
-            f"${total_unrealized_pnl:,.2f}",
+            f"{CURRENCY}{total_unrealized_pnl:,.2f}",
             delta=None,
             delta_color="normal" if total_unrealized_pnl >= 0 else "inverse"
         )
@@ -687,7 +688,7 @@ def render_positions_table(positions_data):
         total_original_value = abs(df['original_value']).sum() if 'original_value' in df.columns else 0
         st.metric(
             "Total Position Amount",
-            f"${abs(total_original_value):,.2f}"
+            f"{CURRENCY}{abs(total_original_value):,.2f}"
         )
     
     # Separate long and short positions for hedging analysis
@@ -698,7 +699,7 @@ def render_positions_table(positions_data):
         long_value = long_positions['original_value'].sum() if not long_positions.empty and 'original_value' in long_positions.columns else 0
         st.metric(
             "Long Exposure",
-            f"${abs(long_value):,.2f}",
+            f"{CURRENCY}{abs(long_value):,.2f}",
             help="Total value of long positions"
         )
     
@@ -706,7 +707,7 @@ def render_positions_table(positions_data):
         short_value = short_positions['original_value'].sum() if not short_positions.empty and 'original_value' in short_positions.columns else 0
         st.metric(
             "Short Exposure",
-            f"${abs(short_value):,.2f}",
+            f"{CURRENCY}{abs(short_value):,.2f}",
             help="Total value of short positions"
         )
 
@@ -732,20 +733,20 @@ def render_positions_table(positions_data):
             ),
             "entry_price": st.column_config.NumberColumn(
                 "Entry Price",
-                format="$%.4f"
+                format=f"{CURRENCY}%.4f"
             ),
             "original_value": st.column_config.NumberColumn(
                 "Original Value",
-                format="$%.2f",
+                format=f"{CURRENCY}%.2f",
                 help="Amount × Entry Price"
             ),
             "mark_price": st.column_config.NumberColumn(
                 "Mark Price",
-                format="$%.4f"
+                format=f"{CURRENCY}%.4f"
             ),
             "unrealized_pnl": st.column_config.NumberColumn(
                 "Unrealized PnL",
-                format="$%.2f"
+                format=f"{CURRENCY}%.2f"
             )
         }
     )
@@ -760,15 +761,15 @@ def render_positions_table(positions_data):
             st.subheader("🟢 Long Positions")
             if not long_positions.empty:
                 long_pnl = long_positions['unrealized_pnl'].sum() if 'unrealized_pnl' in long_positions.columns else 0
-                st.caption(f"PnL: ${long_pnl:,.2f}")
+                st.caption(f"PnL: {CURRENCY}{long_pnl:,.2f}")
                 st.dataframe(
                     long_positions,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
                         "amount": st.column_config.NumberColumn("Amount", format="%.6f"),
-                        "entry_price": st.column_config.NumberColumn("Entry Price", format="$%.4f"),
-                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format="$%.2f")
+                        "entry_price": st.column_config.NumberColumn("Entry Price", format=f"{CURRENCY}%.4f"),
+                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format=f"{CURRENCY}%.2f")
                     }
                 )
         
@@ -776,15 +777,15 @@ def render_positions_table(positions_data):
             st.subheader("🔴 Short Positions")
             if not short_positions.empty:
                 short_pnl = short_positions['unrealized_pnl'].sum() if 'unrealized_pnl' in short_positions.columns else 0
-                st.caption(f"PnL: ${short_pnl:,.2f}")
+                st.caption(f"PnL: {CURRENCY}{short_pnl:,.2f}")
                 st.dataframe(
                     short_positions,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
                         "amount": st.column_config.NumberColumn("Amount", format="%.6f"),
-                        "entry_price": st.column_config.NumberColumn("Entry Price", format="$%.4f"),
-                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format="$%.2f")
+                        "entry_price": st.column_config.NumberColumn("Entry Price", format=f"{CURRENCY}%.4f"),
+                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format=f"{CURRENCY}%.2f")
                     }
                 )
     elif not long_positions.empty:
@@ -820,7 +821,7 @@ def render_orders_table(orders_data):
         ),
         "price": st.column_config.NumberColumn(
             "Price",
-            format="$%.4f"
+            format=f"{CURRENCY}%.4f"
         ),
         "amount": st.column_config.NumberColumn(
             "Amount",
@@ -971,16 +972,16 @@ with market_data_col:
                 ask_price = float(order_book["asks"][0]["price"]) if order_book["asks"] else 0
                 mid_price = (bid_price + ask_price) / 2 if bid_price > 0 and ask_price > 0 else 0
 
-                st.metric(f"💰 {trading_pair}", f"${mid_price:.4f}")
-                st.metric("📈 Bid Price", f"${bid_price:.4f}")
-                st.metric("📉 Ask Price", f"${ask_price:.4f}")
+                st.metric(f"💰 {trading_pair}", f"{CURRENCY}{mid_price:.4f}")
+                st.metric("📈 Bid Price", f"{CURRENCY}{bid_price:.4f}")
+                st.metric("📉 Ask Price", f"{CURRENCY}{ask_price:.4f}")
             else:
                 # Fallback to current price if no order book
                 if prices and trading_pair in prices:
                     current_price = prices[trading_pair]
                     st.metric(
                         f"💰 {trading_pair}",
-                        f"${float(current_price):,.4f}"
+                        f"{CURRENCY}{float(current_price):,.4f}"
                     )
                 else:
                     st.metric(f"💰 {trading_pair}", "Loading...")
@@ -1044,12 +1045,12 @@ with market_data_col:
 
                         st.metric(
                             "📊 Buy Depth (USDT)",
-                            f"${float(buy_vol):,.0f}" if buy_vol != 0 else "N/A",
+                            f"{CURRENCY}{float(buy_vol):,.0f}" if buy_vol != 0 else "N/A",
                             help="Volume available when buying (hitting asks)"
                         )
                         st.metric(
                             "📊 Sell Depth (USDT)",
-                            f"${float(sell_vol):,.0f}" if sell_vol != 0 else "N/A",
+                            f"{CURRENCY}{float(sell_vol):,.0f}" if sell_vol != 0 else "N/A",
                             help="Volume available when selling (hitting bids)"
                         )
                     except Exception:
@@ -1059,12 +1060,12 @@ with market_data_col:
 
                         st.metric(
                             "📊 Buy Depth (USDT)",
-                            f"${total_ask_volume:,.0f}",
+                            f"{CURRENCY}{total_ask_volume:,.0f}",
                             help="Total ask volume (for buying)"
                         )
                         st.metric(
                             "📊 Sell Depth (USDT)",
-                            f"${total_bid_volume:,.0f}",
+                            f"{CURRENCY}{total_bid_volume:,.0f}",
                             help="Total bid volume (for selling)"
                         )
                 else:
@@ -1395,7 +1396,7 @@ def render_order_history_table(order_history):
         column_config={
             "price": st.column_config.NumberColumn(
                 "Price",
-                format="$%.4f"
+                format=f"{CURRENCY}%.4f"
             ),
             "amount": st.column_config.NumberColumn(
                 "Amount",
@@ -1457,7 +1458,7 @@ def render_balances_table():
 
     # Calculate total value
     total_value = df['value'].sum()
-    st.metric("Total Portfolio Value", f"${total_value:,.2f}")
+    st.metric("Total Portfolio Value", f"{CURRENCY}{total_value:,.2f}")
 
     st.dataframe(
         df,
@@ -1474,11 +1475,11 @@ def render_balances_table():
             ),
             "price": st.column_config.NumberColumn(
                 "Price",
-                format="$%.4f"
+                format=f"{CURRENCY}%.4f"
             ),
             "value": st.column_config.NumberColumn(
-                "Value (USD)",
-                format="$%.2f"
+                f"Value ({CURRENCY})",
+                format=f"{CURRENCY}%.2f"
             )
         }
     )
