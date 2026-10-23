@@ -52,6 +52,102 @@ if "last_order_type" not in st.session_state:
 # Set refresh interval for real-time updates
 REFRESH_INTERVAL = 30  # seconds
 
+# Quote assets priced in US dollars; converted to INR when the server displays in ₹
+USD_QUOTES = {"USDT", "USD", "USDC"}
+FX_PAIR = "USDT-INR"
+USDT_INR_RATE = 1.0  # Resolved once the exchange is selected
+
+
+def parse_prices(price_response):
+    """Normalize the different get_prices response formats into {trading_pair: price}."""
+    if isinstance(price_response, dict):
+        if "status" in price_response and price_response.get("status") == "success":
+            return price_response.get("data", {})
+        elif "prices" in price_response:
+            return price_response.get("prices", {})
+        return price_response
+    elif isinstance(price_response, list):
+        return {item.get("trading_pair", "unknown"): item.get("price", 0) for item in price_response if
+                isinstance(item, dict)}
+    return {}
+
+
+@st.cache_data(ttl=REFRESH_INTERVAL, show_spinner=False)
+def fetch_usdt_inr_rate(connector_name):
+    """Fetch the USDT-INR price from the exchange
+    """
+    try:
+        book = backend_api_client.market_data.get_order_book(
+            connector_name=connector_name,
+            trading_pair=FX_PAIR,
+            depth=1
+        )
+        if isinstance(book, dict) and "data" in book:
+            book = book.get("data", {})
+        bids, asks = book.get("bids") or [], book.get("asks") or []
+        best_bid = float(bids[0]["price"]) if bids else 0
+        best_ask = float(asks[0]["price"]) if asks else 0
+        if best_bid > 0 and best_ask > 0:
+            return (best_bid + best_ask) / 2
+        if best_bid > 0 or best_ask > 0:
+            return best_bid or best_ask
+    except Exception:
+        pass
+
+    response = backend_api_client.market_data.get_prices(
+        connector_name=connector_name,
+        trading_pairs=[FX_PAIR]
+    )
+    price = parse_prices(response).get(FX_PAIR)
+    return float(price) if price and float(price) > 0 else None
+
+
+def resolve_usdt_inr_rate(connector_name):
+    """Rate for converting USD-quoted values to the display currency.
+    Exchanges like CoinDCX report USDT-quoted markets (e.g. BTC-USDT) in dollars while the
+    server displays ₹, so those values are multiplied by the USDT-INR price.
+    """
+    global CURRENCY
+    if CURRENCY != "₹":
+        return 1.0
+    rate = None
+    if connector_name:
+        try:
+            rate = fetch_usdt_inr_rate(connector_name)
+        except Exception:
+            rate = None
+    if not rate:
+        st.warning(f"Could not fetch {FX_PAIR} price; showing USD-quoted values in $.")
+        CURRENCY = "$"
+        return 1.0
+    return rate
+
+
+def quote_rate(trading_pair=None):
+    if not trading_pair or "-" not in str(trading_pair):
+        return USDT_INR_RATE
+    quote = str(trading_pair).split("-")[-1].upper()
+    return USDT_INR_RATE if quote in USD_QUOTES else 1.0
+
+
+def convert_price_columns(df, columns):
+    rates = df["trading_pair"].map(quote_rate) if "trading_pair" in df.columns else USDT_INR_RATE
+    for col in columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce") * rates
+    return df
+
+
+def convert_records(records, keys, rate):
+    if rate == 1.0 or not records:
+        return records
+    converted = []
+    for record in records:
+        if isinstance(record, dict):
+            record = {**record, **{k: float(record[k]) * rate for k in keys if record.get(k) is not None}}
+        converted.append(record)
+    return converted
+
 
 def get_accounts_and_credentials():
     """Get available accounts and their credentials."""
@@ -242,20 +338,7 @@ def get_market_data(connector, trading_pair, interval="1m", max_records=100, can
                 connector_name=connector,
                 trading_pairs=[trading_pair]
             )
-            # Handle both response formats
-            if isinstance(price_response, dict):
-                if "status" in price_response and price_response.get("status") == "success":
-                    prices = price_response.get("data", {})
-                elif "prices" in price_response:
-                    # Response has a "prices" field containing the actual price data
-                    prices = price_response.get("prices", {})
-                else:
-                    # Direct dict response with prices
-                    prices = price_response
-            elif isinstance(price_response, list):
-                # If it's a list, try to convert to dict
-                prices = {item.get("trading_pair", "unknown"): item.get("price", 0) for item in price_response if
-                          isinstance(item, dict)}
+            prices = parse_prices(price_response)
         except Exception as e:
             st.warning(f"Could not fetch prices: {e}")
 
@@ -605,7 +688,7 @@ def create_order_book_chart(order_book_data, current_price=None, depth_percentag
         layout = get_default_layout(title="Order Book Depth", height=600, width=300)
         layout.update({
             "xaxis": {
-                "title": "Cumulative Volume (USDT)",
+                "title": f"Cumulative Volume ({CURRENCY})",
                 "color": "white",
                 "showgrid": True,
                 "gridcolor": "rgba(255,255,255,0.1)",
@@ -665,6 +748,8 @@ def render_positions_table(positions_data):
     if df.empty:
         st.info("No open positions found.")
         return
+    
+    df = convert_price_columns(df, ["entry_price", "mark_price", "unrealized_pnl"])
 
     # Calculate original value (amount * entry_price)
     if 'amount' in df.columns and 'entry_price' in df.columns:
@@ -809,7 +894,7 @@ def render_orders_table(orders_data):
     st.subheader("📋 Active Orders")
 
     # Add cancel column to dataframe
-    df_with_cancel = df.copy()
+    df_with_cancel = convert_price_columns(df.copy(), ["price"])
     df_with_cancel["cancel"] = False
 
     # Create column configurations based on what's available in the data
@@ -944,6 +1029,8 @@ with selection_col:
     if connector and trading_pair:
         st.session_state.selected_market = {"connector": connector, "trading_pair": trading_pair}
 
+USDT_INR_RATE = resolve_usdt_inr_rate(st.session_state.selected_connector)
+
 with market_data_col:
     st.subheader("📊 Market Data")
 
@@ -955,6 +1042,8 @@ with market_data_col:
         interval = st.session_state.chart_interval
         max_candles = st.session_state.max_candles
         candles_connector = st.session_state.candles_connector
+
+        display_rate = quote_rate(trading_pair)
 
         # Create sub-columns for organized display
         price_col, depth_col, funding_col, controls_col = st.columns([1, 1, 1, 1])
@@ -972,16 +1061,18 @@ with market_data_col:
                 ask_price = float(order_book["asks"][0]["price"]) if order_book["asks"] else 0
                 mid_price = (bid_price + ask_price) / 2 if bid_price > 0 and ask_price > 0 else 0
 
-                st.metric(f"💰 {trading_pair}", f"{CURRENCY}{mid_price:.4f}")
-                st.metric("📈 Bid Price", f"{CURRENCY}{bid_price:.4f}")
-                st.metric("📉 Ask Price", f"{CURRENCY}{ask_price:.4f}")
+                st.metric(f"💰 {trading_pair}", f"{CURRENCY}{mid_price * display_rate:,.4f}")
+                st.metric("📈 Bid Price", f"{CURRENCY}{bid_price * display_rate:,.4f}")
+                st.metric("📉 Ask Price", f"{CURRENCY}{ask_price * display_rate:,.4f}")
+                if display_rate != 1.0:
+                    st.caption(f"{FX_PAIR}: {CURRENCY}{display_rate:,.2f}")
             else:
                 # Fallback to current price if no order book
                 if prices and trading_pair in prices:
                     current_price = prices[trading_pair]
                     st.metric(
                         f"💰 {trading_pair}",
-                        f"{CURRENCY}{float(current_price):,.4f}"
+                        f"{CURRENCY}{float(current_price) * display_rate:,.4f}"
                     )
                 else:
                     st.metric(f"💰 {trading_pair}", "Loading...")
@@ -1044,27 +1135,27 @@ with market_data_col:
                                 sell_vol = 0
 
                         st.metric(
-                            "📊 Buy Depth (USDT)",
-                            f"{CURRENCY}{float(buy_vol):,.0f}" if buy_vol != 0 else "N/A",
+                            f"📊 Buy Depth ({CURRENCY})",
+                            f"{CURRENCY}{float(buy_vol) * display_rate:,.0f}" if buy_vol != 0 else "N/A",
                             help="Volume available when buying (hitting asks)"
                         )
                         st.metric(
-                            "📊 Sell Depth (USDT)",
-                            f"{CURRENCY}{float(sell_vol):,.0f}" if sell_vol != 0 else "N/A",
+                            f"📊 Sell Depth ({CURRENCY})",
+                            f"{CURRENCY}{float(sell_vol) * display_rate:,.0f}" if sell_vol != 0 else "N/A",
                             help="Volume available when selling (hitting bids)"
                         )
                     except Exception:
                         # Fallback to simple calculation if API fails
-                        total_bid_volume = sum(float(bid["amount"] * bid["price"]) for bid in order_book["bids"])
-                        total_ask_volume = sum(float(ask["amount"] * ask["price"]) for ask in order_book["asks"])
+                        total_bid_volume = sum(float(bid["amount"] * bid["price"]) for bid in order_book["bids"]) * display_rate
+                        total_ask_volume = sum(float(ask["amount"] * ask["price"]) for ask in order_book["asks"]) * display_rate
 
                         st.metric(
-                            "📊 Buy Depth (USDT)",
+                            f"📊 Buy Depth ({CURRENCY})",
                             f"{CURRENCY}{total_ask_volume:,.0f}",
                             help="Total ask volume (for buying)"
                         )
                         st.metric(
-                            "📊 Sell Depth (USDT)",
+                            f"📊 Sell Depth ({CURRENCY})",
                             f"{CURRENCY}{total_bid_volume:,.0f}",
                             help="Total bid volume (for selling)"
                         )
@@ -1140,6 +1231,16 @@ def show_trading_data():
         current_price = float(prices[trading_pair])
     depth_percentage = st.session_state.get("depth_percentage", 1.0)
 
+    display_rate = quote_rate(trading_pair)
+    display_candles = convert_records(candles, ["open", "high", "low", "close"], display_rate)
+    display_order_book = order_book
+    if order_book and display_rate != 1.0:
+        display_order_book = {
+            **order_book,
+            "bids": convert_records(order_book.get("bids", []), ["price"], display_rate),
+            "asks": convert_records(order_book.get("asks", []), ["price"], display_rate),
+        }
+
     with chart_col:
         st.subheader("📈 Price Chart")
 
@@ -1190,20 +1291,21 @@ def show_trading_data():
                 st.session_state.selected_connector,
                 trading_pair
             )
+            trades = convert_records(trades, ["price", "avg_price"], display_rate)
 
         # Add small gap before chart
         st.write("")
 
         # Create candlestick chart
         candles_source = st.session_state.candles_connector if st.session_state.candles_connector else connector
-        candlestick_fig = create_candlestick_chart(candles, candles_source, trading_pair, interval, trades)
+        candlestick_fig = create_candlestick_chart(display_candles, candles_source, trading_pair, interval, trades)
 
     with orderbook_col:
         st.subheader("📊 Order Book")
 
         # Create and display order book chart
         orderbook_fig, price_min, price_max = create_order_book_chart(
-            order_book, current_price, depth_percentage, trading_pair
+            display_order_book, current_price * display_rate, depth_percentage, trading_pair
         )
 
     # Display both charts
@@ -1296,7 +1398,7 @@ def show_trading_data():
                 st.session_state.last_order_type = order_type
                 
                 price = st.number_input(
-                    "Price",
+                    f"Price ({quote_token})",
                     min_value=0.0,
                     value=st.session_state.trade_custom_price,
                     format="%.4f",
@@ -1308,6 +1410,9 @@ def show_trading_data():
                 if price != st.session_state.trade_custom_price:
                     st.session_state.trade_custom_price = price
                     st.session_state.trade_price_set_by_user = True
+
+                if price > 0 and display_rate != 1.0:
+                    st.caption(f"≈ {CURRENCY}{price * display_rate:,.2f}")
 
                 # Show updated conversion for limit orders
                 if price > 0 and amount > 0:
@@ -1389,6 +1494,7 @@ def render_order_history_table(order_history):
         return
 
     st.subheader("📜 Order History")
+    df = convert_price_columns(df, ["price"])
     st.dataframe(
         df,
         use_container_width=True,
@@ -1455,6 +1561,8 @@ def render_balances_table():
         return
 
     st.subheader(f"💰 Account Balances - {st.session_state.selected_account}")
+
+    df = convert_price_columns(df, ["price", "value"])
 
     # Calculate total value
     total_value = df['value'].sum()
