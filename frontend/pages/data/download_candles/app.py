@@ -30,6 +30,8 @@ def _candles_error(trading_pair, connector, raw_error):
         return f"{trading_pair} is not in BASE-QUOTE format. Enter it like USDT-INR or BTC-USDT."
     if "invalid symbol" in error or "-1121" in error or "not found" in error or "unknown symbol" in error:
         return f"{trading_pair} is not available on {connector}. Check the pair name or pick another exchange."
+    if "api credentials" in error:
+        return f"{connector} candles are not configured on the server (missing API credentials)."
     if "no historical data" in error:
         return f"No candles found for {trading_pair} in the selected date range."
     if "429" in error or "too many requests" in error or "rate limit" in error:
