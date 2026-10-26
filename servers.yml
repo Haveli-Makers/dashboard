@@ -2,26 +2,10 @@ servers:
   - name: "Local"
     host: "127.0.0.1"
     port: 8000
-    username: "dipti"
+    username: "admin"
     password: "admin"
   - name: "Production"
-    host: "40.192.63.248"
+    host: "YOUR_SERVER_IP"
     port: 8000
-    username: "mudit"
-    password: "MM@haveli"
-    visible_sections: ["Accounts","Scripts", "Main", "Data"]
-
-  - name: "Coinex"
-    host: "13.158.176.232"
-    port: 8000
-    username: "mudit"
-    password: "MM@haveli"
-    visible_sections: ["Trading Bots", "Accounts"]
-
-  - name: "CoinDCX"
-    host: "65.0.182.131"
-    port: 8000
-    username: "mudit"
-    password: "MM@haveli"
-    visible_sections: ["Trading Bots", "Accounts"]
-    currency: "₹"
+    username: "YOUR_USERNAME"
+    password: "YOUR_PASSWORD"
