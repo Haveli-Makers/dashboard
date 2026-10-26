@@ -1,6 +1,12 @@
 import random
 
 
+def price_precision(price):
+    """Decimal places to show for a price, so low-priced tokens don't render as 0.0000."""
+    price = abs(float(price or 0))
+    return 2 if price >= 1000 else 4 if price >= 1 else 8
+
+
 def generate_random_name(existing_names_list):
     # Convert the list to a set for efficient lookup
     existing_names = set(existing_names_list)
