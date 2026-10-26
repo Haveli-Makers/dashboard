@@ -48,6 +48,7 @@ def _rerun_app():
 
 
 SUPPORTED_EXCHANGES = [
+    "ajaib",
     "binance",
     "coinbase",
     "kraken",

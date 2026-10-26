@@ -230,6 +230,29 @@ class TradingRouter(BaseRouter):
 
         return await self._post("/trading/orders/search", json=filter_request)
 
+    async def search_exchange_orders(
+        self,
+        account_names: Optional[List[str]] = None,
+        connector_names: Optional[List[str]] = None,
+        trading_pairs: Optional[List[str]] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        filter_request = {"limit": limit}
+        if account_names is not None:
+            filter_request["account_names"] = account_names
+        if connector_names is not None:
+            filter_request["connector_names"] = connector_names
+        if trading_pairs is not None:
+            filter_request["trading_pairs"] = trading_pairs
+        if start_time is not None:
+            filter_request["start_time"] = start_time
+        if end_time is not None:
+            filter_request["end_time"] = end_time
+
+        return await self._post("/trading/orders/exchange-history", json=filter_request)
+
     async def get_trades(
         self,
         account_names: Optional[List[str]] = None,
