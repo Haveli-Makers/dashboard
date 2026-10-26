@@ -1,64 +1,66 @@
+import bisect
 import json
-import re
-import time
 
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from frontend.candles import (
+    candles_error,
+    clear_candles_cache,
+    default_candle_source,
+    fetch_recent_candles,
+    get_candle_connectors,
+    get_candle_intervals,
+    interval_to_seconds,
+    is_valid_pair,
+)
+from frontend.st_utils import get_server_cache_key
+from frontend.utils import price_precision
+
 LIGHTWEIGHT_CHARTS_JS = "https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"
 
-FALLBACK_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"]
 CANDLE_COUNT_OPTIONS = [100, 300, 500, 1000]
 CHART_HEIGHT = 520
-
-INTERVAL_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "M": 2592000}
-INTERVAL_PATTERN = re.compile(r"^(\d+)([smhdwM])$")
-
-
-def interval_to_seconds(interval):
-    """Convert an interval like '15m' or '4h' into seconds; None if unrecognised."""
-    match = INTERVAL_PATTERN.match(interval)
-    if not match:
-        return None
-    return int(match.group(1)) * INTERVAL_SECONDS[match.group(2)]
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_candle_connectors(_backend_api_client):
-    try:
-        return set(_backend_api_client.market_data.get_available_candle_connectors() or [])
-    except Exception:
-        return set()
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_intervals(_backend_api_client, connector):
-    try:
-        intervals = _backend_api_client.market_data.get_candle_intervals(connector)
-    except Exception:
-        intervals = None
-    usable = [i for i in (intervals or FALLBACK_INTERVALS) if interval_to_seconds(i)]
-    return usable or FALLBACK_INTERVALS
+TRADES_LIMIT = 500
 
 
 @st.cache_data(ttl=15, show_spinner=False)
-def fetch_candles(_backend_api_client, connector, trading_pair, interval, count):
-    """Fetch the last `count` candles; returns (records, error)."""
-    end_time = int(time.time())
-    start_time = end_time - interval_to_seconds(interval) * count
+def _fetch_trades(_client, server, account_name, connector, trading_pair, start_time, end_time):
+    response = _client.trading.get_trades(
+        account_names=[account_name],
+        connector_names=[connector],
+        trading_pairs=[trading_pair],
+        start_time=start_time,
+        end_time=end_time,
+        limit=TRADES_LIMIT,
+    )
+    if isinstance(response, list):
+        return response
+    if isinstance(response, dict):
+        return response.get("data", [])
+    return []
+
+
+def get_trades(client, account_name, connector, trading_pair, start_time, end_time):
+    """The account's fills for the pair in [start_time, end_time]; empty if they can't be fetched."""
+    if not account_name:
+        return []
     try:
-        candles = _backend_api_client.market_data.get_historical_candles(
-            connector_name=connector,
-            trading_pair=trading_pair,
-            interval=interval,
-            start_time=start_time,
-            end_time=end_time,
-        )
-    except Exception as e:
-        return [], str(e)
-    if isinstance(candles, dict):
-        return [], str(candles.get("error", "Unexpected response from backend"))
-    return (candles or [])[-count:], None
+        return _fetch_trades(client, get_server_cache_key(), account_name, connector, trading_pair,
+                             int(start_time), int(end_time))
+    except Exception:
+        return []
+
+
+def _to_unix_seconds(value):
+    """Parse a seconds/milliseconds epoch or an ISO datetime string; None if unparseable."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value / 1000 if value > 1_000_000_000_000 else value)
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    return None if pd.isna(parsed) else int(parsed.timestamp())
 
 
 def to_chart_series(candles):
@@ -73,7 +75,10 @@ def to_chart_series(candles):
     ohlc, volume = [], []
     for ts in sorted(by_time):
         c = by_time[ts]
-        o, h, l, cl = (float(c[k]) for k in ("open", "high", "low", "close"))
+        try:
+            o, h, l, cl = (float(c[k]) for k in ("open", "high", "low", "close"))
+        except (KeyError, TypeError, ValueError):
+            continue
         ohlc.append({"time": ts, "open": o, "high": h, "low": l, "close": cl})
         volume.append({
             "time": ts,
@@ -83,16 +88,50 @@ def to_chart_series(candles):
     return ohlc, volume
 
 
-def render_lightweight_chart(ohlc, volume, height=CHART_HEIGHT):
+def to_trade_markers(trades, ohlc, interval):
+    """Buy/sell markers for fills inside the charted range, snapped to the candle they happened in."""
+    if not trades or not ohlc:
+        return []
+    bar_times = [bar["time"] for bar in ohlc]
+    range_end = bar_times[-1] + interval_to_seconds(interval)
+    markers = []
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        ts = _to_unix_seconds(trade.get("timestamp") or trade.get("created_at") or trade.get("execution_time"))
+        side = str(trade.get("trade_type") or trade.get("side") or "").upper()
+        if ts is None or not bar_times[0] <= ts < range_end or side not in ("BUY", "SELL"):
+            continue
+        is_buy = side == "BUY"
+        markers.append({
+            "time": bar_times[bisect.bisect_right(bar_times, ts) - 1],
+            "position": "belowBar" if is_buy else "aboveBar",
+            "color": "#22c55e" if is_buy else "#f03b3b",
+            "shape": "arrowUp" if is_buy else "arrowDown",
+            "text": "B" if is_buy else "S",
+        })
+    return sorted(markers, key=lambda m: m["time"])
+
+
+def render_lightweight_chart(ohlc, volume, markers=(), height=CHART_HEIGHT):
     last_price = ohlc[-1]["close"] if ohlc else 0
-    precision = 2 if last_price >= 1000 else 4 if last_price >= 1 else 8
+    precision = price_precision(last_price)
     chart_html = f"""
     <div id="chart" style="width:100%;height:{height - 10}px;"></div>
     <script src="{LIGHTWEIGHT_CHARTS_JS}"></script>
     <script>
-      // Lightweight Charts renders timestamps as UTC; shift them so the axis shows the viewer's local time.
-      const tzOffset = -new Date().getTimezoneOffset() * 60;
-      const toLocal = (rows) => rows.map((r) => ({{ ...r, time: r.time + tzOffset }}));
+      // Data stays in UTC; only the labels are formatted in the viewer's timezone, so DST is handled per bar.
+      const fmt = (opts) => new Intl.DateTimeFormat(undefined, {{ hourCycle: "h23", ...opts }});
+      const crosshairFmt = fmt({{ year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }});
+      // Indexed by LightweightCharts.TickMarkType: Year, Month, DayOfMonth, Time, TimeWithSeconds
+      const tickFmts = [
+        fmt({{ year: "numeric" }}),
+        fmt({{ month: "short" }}),
+        fmt({{ day: "numeric", month: "short" }}),
+        fmt({{ hour: "2-digit", minute: "2-digit" }}),
+        fmt({{ hour: "2-digit", minute: "2-digit", second: "2-digit" }}),
+      ];
+      const toDate = (t) => new Date(t * 1000);
       const el = document.getElementById("chart");
       const chart = LightweightCharts.createChart(el, {{
         autoSize: true,
@@ -102,19 +141,24 @@ def render_lightweight_chart(ohlc, volume, height=CHART_HEIGHT):
                  horzLines: {{ color: "rgba(128,128,128,0.12)" }} }},
         crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
         rightPriceScale: {{ borderColor: "rgba(128,128,128,0.3)" }},
-        timeScale: {{ borderColor: "rgba(128,128,128,0.3)", timeVisible: true, secondsVisible: false }},
+        localization: {{ timeFormatter: (t) => crosshairFmt.format(toDate(t)) }},
+        timeScale: {{
+          borderColor: "rgba(128,128,128,0.3)", timeVisible: true, secondsVisible: false,
+          tickMarkFormatter: (t, type) => (tickFmts[type] || tickFmts[3]).format(toDate(t)),
+        }},
       }});
       const candles = chart.addCandlestickSeries({{
         upColor: "#22c55e", downColor: "#f03b3b", borderVisible: false,
         wickUpColor: "#22c55e", wickDownColor: "#f03b3b",
         priceFormat: {{ type: "price", precision: {precision}, minMove: {10 ** -precision} }},
       }});
-      candles.setData(toLocal({json.dumps(ohlc)}));
+      candles.setData({json.dumps(ohlc)});
+      candles.setMarkers({json.dumps(list(markers))});
       const vol = chart.addHistogramSeries({{
         priceFormat: {{ type: "volume" }}, priceScaleId: "", lastValueVisible: false, priceLineVisible: false,
       }});
       vol.priceScale().applyOptions({{ scaleMargins: {{ top: 0.8, bottom: 0 }} }});
-      vol.setData(toLocal({json.dumps(volume)}));
+      vol.setData({json.dumps(volume)});
       chart.timeScale().fitContent();
     </script>
     """
@@ -122,17 +166,32 @@ def render_lightweight_chart(ohlc, volume, height=CHART_HEIGHT):
 
 
 @st.dialog("📈 Price Chart", width="large")
-def show_price_chart_dialog(backend_api_client, connector, trading_pair):
-    candle_connectors = get_candle_connectors(backend_api_client)
-    if candle_connectors and connector not in candle_connectors:
-        st.info(f"Candles are not available for {connector}.")
+def show_price_chart_dialog(backend_api_client, connector, trading_pair, account_name=None):
+    trading_pair = trading_pair.strip().upper()
+    if not is_valid_pair(trading_pair):
+        st.warning(candles_error(trading_pair, connector, "invalid pair format"))
         return
 
-    intervals = get_intervals(backend_api_client, connector)
+    candle_connectors = get_candle_connectors(backend_api_client)
+    default_source = default_candle_source(connector, candle_connectors)
     last_interval = st.session_state.get("price_chart_last_interval", "1m")
     last_count = st.session_state.get("price_chart_last_count", 300)
 
-    interval_col, count_col, refresh_col = st.columns([2, 2, 1], vertical_alignment="bottom")
+    source_col, interval_col, count_col, refresh_col = st.columns([2, 2, 2, 1], vertical_alignment="bottom")
+    with source_col:
+        source = st.selectbox(
+            "Candles source",
+            candle_connectors,
+            index=candle_connectors.index(default_source) if default_source else None,
+            placeholder="Pick a feed",
+            help="Some exchanges don't provide candles. Select an alternative source.",
+            key=f"price_chart_source_{connector}",
+        )
+    if source is None:
+        st.info(f"{connector} has no candle feed. Pick another exchange to chart {trading_pair}.")
+        return
+
+    intervals = get_candle_intervals(backend_api_client, source)
     with interval_col:
         interval = st.selectbox(
             "Interval",
@@ -145,21 +204,32 @@ def show_price_chart_dialog(backend_api_client, connector, trading_pair):
     st.session_state.price_chart_last_count = count
     with refresh_col:
         if st.button("🔄", help="Refresh chart", use_container_width=True, key="price_chart_refresh"):
-            fetch_candles.clear()
+            clear_candles_cache()
+            _fetch_trades.clear()
 
     with st.spinner(f"Loading {interval} candles for {trading_pair}…"):
-        candles, error = fetch_candles(backend_api_client, connector, trading_pair, interval, count)
+        candles, error = fetch_recent_candles(backend_api_client, source, trading_pair, interval, count)
 
     if error:
-        st.warning(f"Could not load candles for {trading_pair} on {connector}.")
+        st.warning(candles_error(trading_pair, source, error))
         with st.expander("Error details"):
             st.code(error, language="text")
         return
 
     ohlc, volume = to_chart_series(candles)
     if not ohlc:
-        st.info(f"No candles found for {trading_pair} on {connector} at {interval}.")
+        st.info(f"No candles found for {trading_pair} on {source} at {interval}.")
         return
 
-    st.caption(f"{connector} · {trading_pair} · {interval} · {len(ohlc)} candles")
-    render_lightweight_chart(ohlc, volume)
+    # Fills come from the trading connector, even when the candles come from another feed
+    trades = get_trades(backend_api_client, account_name, connector, trading_pair,
+                        ohlc[0]["time"], ohlc[-1]["time"] + interval_to_seconds(interval))
+    markers = to_trade_markers(trades, ohlc, interval)
+
+    caption = f"{source} · {trading_pair} · {interval} · {len(ohlc)} candles"
+    if source != connector:
+        caption += f" · trading on {connector}"
+    if markers:
+        caption += f" · {len(markers)} of your trades"
+    st.caption(caption)
+    render_lightweight_chart(ohlc, volume, markers)
