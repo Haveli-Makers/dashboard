@@ -109,13 +109,22 @@ def get_candle_intervals(client, connector):
         return FALLBACK_INTERVALS
 
 
+def _base_connector(connector):
+    """Strip account-specific suffixes (e.g. coindcx__org → coindcx)."""
+    return connector.split("__")[0] if "__" in connector else connector
+
+
 def default_candle_source(connector, candle_connectors):
-    """The connector itself if it has a feed, else its live counterpart (binance_paper_trade -> binance)."""
+    """The connector itself if it has a feed, else its live counterpart."""
     if connector in candle_connectors:
         return connector
+    base = _base_connector(connector)
+    if base != connector and base in candle_connectors:
+        return base
     for suffix in NO_FEED_SUFFIXES:
-        if connector.endswith(suffix) and connector[:-len(suffix)] in candle_connectors:
-            return connector[:-len(suffix)]
+        stripped = base if base != connector else connector
+        if stripped.endswith(suffix) and stripped[:-len(suffix)] in candle_connectors:
+            return stripped[:-len(suffix)]
     return None
 
 

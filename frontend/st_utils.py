@@ -89,9 +89,28 @@ def load_servers() -> list[dict]:
             'username': BACKEND_API_USERNAME,
             'password': BACKEND_API_PASSWORD,
         }]
-    with open(servers_path) as f:
+    with open(servers_path, encoding='utf-8') as f:
         data = yaml.load(f, Loader=SafeLoader)
     return data.get('servers', [])
+
+
+SERVER_QUERY_PARAM = "server"
+
+
+def _init_selected_server_name(server_names: list[str]) -> None:
+    """Restore the selected server from the URL (survives page refresh), else default to the first one."""
+    if 'selected_server_name' in st.session_state or not server_names:
+        return
+    requested = st.query_params.get(SERVER_QUERY_PARAM)
+    st.session_state.selected_server_name = requested if requested in server_names else server_names[0]
+
+
+def sync_server_query_param() -> None:
+    """Keep the selected server in the URL so a refresh reloads the same server.
+    Must run after st.navigation(), since switching pages clears query params."""
+    selected_name = st.session_state.get('selected_server_name')
+    if selected_name and st.query_params.get(SERVER_QUERY_PARAM) != selected_name:
+        st.query_params[SERVER_QUERY_PARAM] = selected_name
 
 
 def render_server_selector():
@@ -100,8 +119,7 @@ def render_server_selector():
     if not servers:
         return
     server_names = [s['name'] for s in servers]
-    if 'selected_server_name' not in st.session_state:
-        st.session_state.selected_server_name = server_names[0]
+    _init_selected_server_name(server_names)
 
     def _on_server_change():
         st.session_state.selected_server_name = st.session_state._server_selector
@@ -120,6 +138,8 @@ def render_server_selector():
 def _get_selected_server() -> dict:
     """Return the server config dict for the currently selected server."""
     servers = load_servers()
+    if servers:
+        _init_selected_server_name([s['name'] for s in servers])
     selected_name = st.session_state.get('selected_server_name')
     for s in servers:
         if s['name'] == selected_name:
@@ -130,6 +150,11 @@ def _get_selected_server() -> dict:
 def get_selected_server_config() -> dict:
     """Public helper: returns host, port, username, password for the active server."""
     return _get_selected_server()
+
+
+def get_currency_symbol() -> str:
+    """Currency symbol for the active server (set via `currency` in servers.yml, defaults to $)."""
+    return _get_selected_server().get('currency', '$')
 
 
 def get_server_cache_key() -> str:

@@ -2,7 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from frontend.st_utils import get_backend_api_client
+from frontend.st_utils import get_backend_api_client, get_currency_symbol
 from frontend.visualization.dca_builder import create_dca_graph
 
 backend_api = get_backend_api_client()
@@ -36,6 +36,7 @@ def get_dca_inputs(config: dict):
 
 
 def display_dca_performance(executors: pd.DataFrame):
+    CURRENCY = get_currency_symbol()
     col1, col2, col3 = st.columns(3)
     with col1:
         level_id_pie_chart_fig = go.Figure()
@@ -71,7 +72,7 @@ def display_dca_performance(executors: pd.DataFrame):
                                  y=intra_level_id_pnl_data['pnl'],
                                  mode='lines+markers',
                                  name='PnL',
-                                 text=intra_level_id_pnl_data['pnl'].apply(lambda x: f"$ {x:.2f}"),
+                                 text=intra_level_id_pnl_data['pnl'].apply(lambda x: f"{CURRENCY} {x:.2f}"),
                                  textposition='top center',
                                  yaxis='y2'))
 

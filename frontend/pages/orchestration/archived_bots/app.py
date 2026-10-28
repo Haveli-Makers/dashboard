@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from dashboard.api_client.audit import audit_logged
 import nest_asyncio
 import numpy as np
 import pandas as pd
@@ -11,8 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from api_client.audit import audit_logged
-from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.st_utils import get_backend_api_client, get_currency_symbol, initialize_st_page
 
 # Enable nested async
 nest_asyncio.apply()
@@ -59,6 +59,7 @@ if "bot_runs" not in st.session_state:
 
 # Get backend client
 backend_client = get_backend_api_client()
+CURRENCY = get_currency_symbol()
 
 
 # Helper functions
@@ -378,10 +379,10 @@ def create_bot_runs_scatterplot(bot_runs: List[Dict], healthy_databases: List[st
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>" +
                     "Strategy: %{customdata[1]}<br>" +
-                    "Global PnL: $%{y:.4f}<br>" +
-                    "Volume: $%{x:,.0f}<br>" +
-                    "Realized PnL: $%{customdata[2]:.4f}<br>" +
-                    "Unrealized PnL: $%{customdata[3]:.4f}<br>" +
+                    f"Global PnL: {CURRENCY}%{{y:.4f}}<br>" +
+                    f"Volume: {CURRENCY}%{{x:,.0f}}<br>" +
+                    f"Realized PnL: {CURRENCY}%{{customdata[2]:.4f}}<br>" +
+                    f"Unrealized PnL: {CURRENCY}%{{customdata[3]:.4f}}<br>" +
                     "Duration: %{customdata[4]:.1f}h<br>" +
                     "Deployed: %{customdata[5]}<br>" +
                     "Stopped: %{customdata[6]}<br>" +
@@ -397,8 +398,8 @@ def create_bot_runs_scatterplot(bot_runs: List[Dict], healthy_databases: List[st
     # Update layout
     fig.update_layout(
         title="Bot Runs Performance Overview",
-        xaxis_title="Volume Traded ($)",
-        yaxis_title="Global PnL ($)",
+        xaxis_title=f"Volume Traded ({CURRENCY})",
+        yaxis_title=f"Global PnL ({CURRENCY})",
         template="plotly_dark",
         plot_bgcolor='rgba(0, 0, 0, 0)',
         paper_bgcolor='rgba(0, 0, 0, 0.1)',
@@ -587,7 +588,7 @@ def add_trades_to_chart(fig, trades_data: List[Dict[str, Any]]):
             showlegend=False,
             hovertemplate=f"<b>{'Buy' if is_buy else 'Sell'} Trade</b><br>" +
                         f"Time: %{{x}}<br>" +
-                        f"Price: ${trade_price:.4f}<br>" +
+                        f"Price: {CURRENCY}{trade_price:.4f}<br>" +
                         f"Amount: {trade.get('amount', 0):.4f}<br>" +
                         "<extra></extra>"
         ))
@@ -684,7 +685,7 @@ def create_comprehensive_dashboard(candles_data: List[Dict[str, Any]], trades_da
                 ),
                 name=f"{'Buy' if is_buy else 'Sell'} Trade",
                 showlegend=False,
-                hovertemplate=f"<b>{'Buy' if is_buy else 'Sell'}</b><br>Price: ${trade['price']:.4f}<br>Amount: {trade.get('amount', 0):.4f}<extra></extra>"
+                hovertemplate=f"<b>{'Buy' if is_buy else 'Sell'}</b><br>Price: {CURRENCY}{trade['price']:.4f}<br>Amount: {trade.get('amount', 0):.4f}<extra></extra>"
             ), row=1, col=1)
     
     # Add dynamic average price lines from performance data
@@ -702,7 +703,7 @@ def create_comprehensive_dashboard(candles_data: List[Dict[str, Any]], trades_da
                 name="Buy Avg Price",
                 line=dict(color="green", width=2, dash="dash"),
                 showlegend=True,
-                hovertemplate="<b>Buy Avg Price</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>"
+                hovertemplate=f"<b>Buy Avg Price</b><br>Time: %{{x}}<br>Price: {CURRENCY}%{{y:.4f}}<extra></extra>"
             ), row=1, col=1)
             
             # Add final buy average price as horizontal line
@@ -710,7 +711,7 @@ def create_comprehensive_dashboard(candles_data: List[Dict[str, Any]], trades_da
             fig.add_hline(
                 y=final_buy_avg,
                 line=dict(color="green", width=1, dash="dot"),
-                annotation_text=f"Final Buy Avg: ${final_buy_avg:.4f}",
+                annotation_text=f"Final Buy Avg: {CURRENCY}{final_buy_avg:.4f}",
                 annotation_position="bottom right",
                 annotation_font_color="green",
                 annotation_font_size=10,
@@ -726,7 +727,7 @@ def create_comprehensive_dashboard(candles_data: List[Dict[str, Any]], trades_da
                 name="Sell Avg Price",
                 line=dict(color="red", width=2, dash="dash"),
                 showlegend=True,
-                hovertemplate="<b>Sell Avg Price</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>"
+                hovertemplate=f"<b>Sell Avg Price</b><br>Time: %{{x}}<br>Price: {CURRENCY}%{{y:.4f}}<extra></extra>"
             ), row=1, col=1)
             
             # Add final sell average price as horizontal line
@@ -734,7 +735,7 @@ def create_comprehensive_dashboard(candles_data: List[Dict[str, Any]], trades_da
             fig.add_hline(
                 y=final_sell_avg,
                 line=dict(color="red", width=1, dash="dot"),
-                annotation_text=f"Final Sell Avg: ${final_sell_avg:.4f}",
+                annotation_text=f"Final Sell Avg: {CURRENCY}{final_sell_avg:.4f}",
                 annotation_position="top right",
                 annotation_font_color="red",
                 annotation_font_size=10,
@@ -799,8 +800,8 @@ def create_comprehensive_dashboard(candles_data: List[Dict[str, Any]], trades_da
     
     # Update axis properties
     fig.update_xaxes(rangeslider_visible=False)
-    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
-    fig.update_yaxes(title_text="PnL & Fees ($)", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(title_text=f"Price ({CURRENCY})", row=1, col=1)
+    fig.update_yaxes(title_text=f"PnL & Fees ({CURRENCY})", row=2, col=1, secondary_y=False)
     fig.update_yaxes(title_text="Position", row=2, col=1, secondary_y=True)
     
     return fig
@@ -849,11 +850,11 @@ if st.session_state.bot_runs:
         
         with col3:
             total_pnl = runs_df["global_pnl"].sum()
-            st.metric("Total PnL", f"${total_pnl:,.2f}")
+            st.metric("Total PnL", f"{CURRENCY}{total_pnl:,.2f}")
         
         with col4:
             total_volume = runs_df["volume_traded"].sum()
-            st.metric("Total Volume", f"${total_volume:,.0f}")
+            st.metric("Total Volume", f"{CURRENCY}{total_volume:,.0f}")
     else:
         st.warning("No bot runs data available for visualization.")
 else:
@@ -955,7 +956,7 @@ if st.session_state.selected_database:
             net_pnl = summary.get('final_net_pnl_quote', 0)
             st.metric(
                 "Net PnL (Quote)",
-                value=f"${net_pnl:,.6f}",
+                value=f"{CURRENCY}{net_pnl:,.6f}",
                 delta=f"{net_pnl:+.6f}" if net_pnl != 0 else None
             )
         
@@ -963,14 +964,14 @@ if st.session_state.selected_database:
             fees = summary.get('total_fees_quote', 0)
             st.metric(
                 "Total Fees (Quote)",
-                value=f"${fees:,.4f}"
+                value=f"{CURRENCY}{fees:,.4f}"
             )
         
         with col3:
             realized_pnl = summary.get('final_realized_pnl_quote', 0)
             st.metric(
                 "Realized PnL",
-                value=f"${realized_pnl:,.6f}",
+                value=f"{CURRENCY}{realized_pnl:,.6f}",
                 delta=f"{realized_pnl:+.6f}" if realized_pnl != 0 else None
             )
         
@@ -978,7 +979,7 @@ if st.session_state.selected_database:
             volume = summary.get('total_volume_quote', 0)
             st.metric(
                 "Total Volume",
-                value=f"${volume:,.2f}"
+                value=f"{CURRENCY}{volume:,.2f}"
             )
         
         st.divider()
