@@ -157,6 +157,13 @@ def get_currency_symbol() -> str:
     return _get_selected_server().get('currency', '$')
 
 
+def get_server_cache_key() -> str:
+    """Hashable id of the active server. st.cache_data is shared across sessions, so cached
+    backend data must be keyed by it."""
+    server = _get_selected_server()
+    return f"{server.get('name')}@{server.get('host')}:{server.get('port')}"
+
+
 def start_google_login():
     st.session_state.pop("google_access_denied_email", None)
     try:
