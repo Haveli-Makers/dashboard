@@ -1,13 +1,15 @@
 import datetime
 import html
-import time
+import math
 
 import nest_asyncio
 import pandas as pd
 import streamlit as st
 
+from frontend.candles import is_valid_pair, market_data_error
 from frontend.components.price_chart import show_price_chart_dialog
-from frontend.st_utils import get_backend_api_client, initialize_st_page
+from frontend.st_utils import get_backend_api_client, get_server_cache_key, initialize_st_page
+from frontend.utils import price_precision
 
 # Enable nested async
 nest_asyncio.apply()
@@ -29,14 +31,8 @@ if "selected_market" not in st.session_state:
     st.session_state.selected_market = {"connector": "binance_perpetual", "trading_pair": "BTC-USDT"}
 if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = False  # Start with manual refresh
-if "last_api_request" not in st.session_state:
-    st.session_state.last_api_request = 0  # Track last API request time
-if "last_refresh_time" not in st.session_state:
-    st.session_state.last_refresh_time = 0  # Track last refresh time
 
 # Trading form session state
-if "trade_custom_price" not in st.session_state:
-    st.session_state.trade_custom_price = None  # User's custom price input
 if "trade_price_set_by_user" not in st.session_state:
     st.session_state.trade_price_set_by_user = False  # Track if user set custom price
 if "last_order_type" not in st.session_state:
@@ -44,7 +40,48 @@ if "last_order_type" not in st.session_state:
 
 # Set refresh interval for real-time updates
 REFRESH_INTERVAL = 30  # seconds
+MARKET_DATA_TTL = 3  # seconds; lets form edits and clicks reuse the market data instead of re-fetching
 ORDER_BOOK_ROWS = 22
+
+
+@st.cache_data(ttl=MARKET_DATA_TTL, show_spinner=False)
+def _fetch_order_book(server, connector, trading_pair, depth):
+    return backend_api_client.market_data.get_order_book(
+        connector_name=connector,
+        trading_pair=trading_pair,
+        depth=depth
+    )
+
+
+@st.cache_data(ttl=MARKET_DATA_TTL, show_spinner=False)
+def _fetch_prices(server, connector, trading_pair):
+    return backend_api_client.market_data.get_prices(
+        connector_name=connector,
+        trading_pairs=[trading_pair]
+    )
+
+
+@st.cache_data(ttl=MARKET_DATA_TTL, show_spinner=False)
+def _fetch_quote_volume(server, connector, trading_pair, price, is_buy):
+    return backend_api_client.market_data.get_quote_volume_for_price(
+        connector_name=connector,
+        trading_pair=trading_pair,
+        price=price,
+        is_buy=is_buy
+    )
+
+
+@st.cache_data(ttl=REFRESH_INTERVAL, show_spinner=False)
+def _fetch_funding_info(server, connector, trading_pair):
+    return backend_api_client.market_data.get_funding_info(
+        connector_name=connector,
+        trading_pair=trading_pair
+    )
+
+
+def clear_market_data_cache():
+    for cached_fetch in (_fetch_order_book, _fetch_prices, _fetch_quote_volume, _fetch_funding_info):
+        cached_fetch.clear()
 
 
 def split_trading_pair(trading_pair):
@@ -53,13 +90,17 @@ def split_trading_pair(trading_pair):
     return base_token, quote_token if separator else ""
 
 
-def get_price_map(connector, trading_pair):
+def show_market_data_error(data, connector, trading_pair, error):
+    """Show a readable message, with the raw backend error tucked away for debugging."""
+    st.warning(market_data_error(trading_pair, connector, error, data=data))
+    with st.expander("Error details"):
+        st.code(str(error), language="text")
+
+
+def get_price_map(connector, trading_pair, quiet=False):
     """Get the latest price response normalized to a trading_pair -> price mapping."""
     try:
-        price_response = backend_api_client.market_data.get_prices(
-            connector_name=connector,
-            trading_pairs=[trading_pair]
-        )
+        price_response = _fetch_prices(get_server_cache_key(), connector, trading_pair)
         if isinstance(price_response, dict):
             if price_response.get("status") == "success":
                 return price_response.get("data", {})
@@ -73,7 +114,8 @@ def get_price_map(connector, trading_pair):
                 if isinstance(item, dict)
             }
     except Exception as e:
-        st.warning(f"Could not fetch prices: {e}")
+        if not quiet:
+            show_market_data_error("prices", connector, trading_pair, e)
     return {}
 
 
@@ -93,6 +135,25 @@ def get_current_price(prices, trading_pair, order_book):
         except (TypeError, ValueError, KeyError):
             pass
     return 0.0
+
+
+def get_market_snapshot(connector, trading_pair):
+    """Order book plus the best available current price for the pair. Fetch errors are left to the
+    market header to report, so they show once."""
+    order_book = get_order_book(connector, trading_pair, depth=ORDER_BOOK_ROWS, quiet=True)
+    prices = get_price_map(connector, trading_pair, quiet=True)
+    return order_book, get_current_price(prices, trading_pair, order_book)
+
+
+def get_quote_volume(connector, trading_pair, price, is_buy):
+    """Quote volume available up to `price`, or 0 when the backend has no usable value."""
+    response = _fetch_quote_volume(get_server_cache_key(), connector, trading_pair, price, is_buy)
+    volume = response.get("result_quote_volume") if isinstance(response, dict) else None
+    try:
+        volume = float(volume)
+    except (TypeError, ValueError):
+        return 0
+    return 0 if math.isnan(volume) else volume
 
 
 def get_accounts_and_credentials():
@@ -200,14 +261,10 @@ def get_order_history(start_date=None, end_date=None, tz=None):
     return db_orders + exchange_orders
 
 
-def get_order_book(connector, trading_pair, depth=10):
+def get_order_book(connector, trading_pair, depth=10, quiet=False):
     """Get order book data for the selected trading pair."""
     try:
-        response = backend_api_client.market_data.get_order_book(
-            connector_name=connector,
-            trading_pair=trading_pair,
-            depth=depth
-        )
+        response = _fetch_order_book(get_server_cache_key(), connector, trading_pair, depth)
 
         # Handle both response formats
         if isinstance(response, dict):
@@ -217,7 +274,8 @@ def get_order_book(connector, trading_pair, depth=10):
                 return response
         return {}
     except Exception as e:
-        st.warning(f"Could not fetch order book: {e}")
+        if not quiet:
+            show_market_data_error("the order book", connector, trading_pair, e)
         return {}
 
 
@@ -226,10 +284,7 @@ def get_funding_rate(connector, trading_pair):
     try:
         # Only try to get funding rate for perpetual connectors
         if "perpetual" in connector.lower():
-            response = backend_api_client.market_data.get_funding_info(
-                connector_name=connector,
-                trading_pair=trading_pair
-            )
+            response = _fetch_funding_info(get_server_cache_key(), connector, trading_pair)
             # Handle both response formats
             if isinstance(response, dict):
                 if "status" in response and response.get("status") == "success":
@@ -538,6 +593,10 @@ with conn_col:
     else:
         st.error("No credentials available")
         connector = None
+    if connector is None:
+        # Don't keep trading on the previous account's exchange
+        st.session_state.selected_connector = None
+        st.session_state.selected_market = {}
 
 with pair_col:
     trading_pair = st.text_input(
@@ -545,9 +604,15 @@ with pair_col:
         value="BTC-USDT",
         key="trading_pair_input"
     )
+    trading_pair = trading_pair.strip().upper()
+    if trading_pair and not is_valid_pair(trading_pair):
+        st.warning(market_data_error(trading_pair, connector, "invalid pair format"))
+        trading_pair = ""
 
 if connector and trading_pair:
     st.session_state.selected_market = {"connector": connector, "trading_pair": trading_pair}
+else:
+    st.session_state.selected_market = {}
 
 st.divider()
 market_title_col, refresh_toggle_col, refresh_btn_col = st.columns([4, 1, 1])
@@ -562,47 +627,38 @@ with refresh_toggle_col:
     st.session_state.auto_refresh_enabled = auto_refresh
 with refresh_btn_col:
     if st.button("🔄 Refresh Now", use_container_width=True, type="primary"):
-        st.session_state.last_refresh_time = time.time()
+        clear_market_data_cache()
         st.rerun()
 
-if st.session_state.selected_market.get("connector") and st.session_state.selected_market.get("trading_pair"):
-    connector = st.session_state.selected_market["connector"]
-    trading_pair = st.session_state.selected_market["trading_pair"]
-    fetch_start = time.time()
-    order_book = get_order_book(connector, trading_pair, depth=ORDER_BOOK_ROWS)
-    prices = get_price_map(connector, trading_pair)
-    current_price = get_current_price(prices, trading_pair, order_book)
-    st.session_state["last_fetch_time"] = (time.time() - fetch_start) * 1000
-    st.session_state["market_snapshot"] = {
-        "connector": connector,
-        "trading_pair": trading_pair,
-        "order_book": order_book,
-        "prices": prices,
-        "current_price": current_price,
-    }
+# Market sections refresh as fragments, so auto-refresh never reruns (and resets) the trade form
+MARKET_RUN_EVERY = REFRESH_INTERVAL if st.session_state.auto_refresh_enabled else None
 
-    if "last_fetch_time" in st.session_state:
-        st.caption(f"⚡ Fetch: {st.session_state['last_fetch_time']:.0f}ms")
+
+def render_market_header(connector, trading_pair):
+    order_book = get_order_book(connector, trading_pair, depth=ORDER_BOOK_ROWS)
 
     bid_price = 0
     ask_price = 0
     if order_book and "bids" in order_book and "asks" in order_book:
         bid_price = float(order_book["bids"][0]["price"]) if order_book["bids"] else 0
         ask_price = float(order_book["asks"][0]["price"]) if order_book["asks"] else 0
+    precision = price_precision(bid_price or ask_price)
 
-    bid_col, ask_col, spread_col, depth_pct_col, buy_depth_col, sell_depth_col = st.columns(6)
+    is_perpetual = "perpetual" in connector.lower()
+    header_cols = st.columns(7 if is_perpetual else 6)
+    bid_col, ask_col, spread_col, depth_pct_col, buy_depth_col, sell_depth_col = header_cols[:6]
 
     with bid_col:
-        st.metric("📈 Bid Price", f"${bid_price:.4f}" if bid_price else "N/A")
+        st.metric("📈 Bid Price", f"${bid_price:,.{precision}f}" if bid_price else "N/A")
 
     with ask_col:
-        st.metric("📉 Ask Price", f"${ask_price:.4f}" if ask_price else "N/A")
+        st.metric("📉 Ask Price", f"${ask_price:,.{precision}f}" if ask_price else "N/A")
 
     with spread_col:
         if bid_price > 0 and ask_price > 0:
             spread = ask_price - bid_price
             spread_pct = (spread / bid_price) * 100
-            st.metric("↔️ Spread", f"${spread:.4f}", delta=f"{spread_pct:.4f}%")
+            st.metric("↔️ Spread", f"${spread:,.{precision}f}", delta=f"{spread_pct:.4f}%")
         else:
             st.metric("↔️ Spread", "N/A")
 
@@ -622,21 +678,10 @@ if st.session_state.selected_market.get("connector") and st.session_state.select
             depth_factor = depth_percentage / 100
             sell_price_depth = ask_price * (1 + depth_factor)
             try:
-                buy_response = backend_api_client.market_data.get_quote_volume_for_price(
-                    connector_name=connector,
-                    trading_pair=trading_pair,
-                    price=sell_price_depth,
-                    is_buy=True
-                )
-                buy_vol = 0
-                if isinstance(buy_response, dict) and "result_quote_volume" in buy_response:
-                    buy_vol = buy_response["result_quote_volume"]
-                    import math
-                    if buy_vol is None or (isinstance(buy_vol, float) and math.isnan(buy_vol)) or str(buy_vol).lower() == 'nan':
-                        buy_vol = 0
+                buy_vol = get_quote_volume(connector, trading_pair, sell_price_depth, is_buy=True)
                 st.metric(
                     "📊 Buy Depth",
-                    f"${float(buy_vol):,.0f}" if buy_vol != 0 else "N/A",
+                    f"${buy_vol:,.0f}" if buy_vol != 0 else "N/A",
                     help="Volume available when buying (hitting asks)"
                 )
             except Exception:
@@ -650,25 +695,10 @@ if st.session_state.selected_market.get("connector") and st.session_state.select
             depth_factor = depth_percentage / 100
             buy_price_depth = bid_price * (1 - depth_factor)
             try:
-                sell_response = backend_api_client.market_data.get_quote_volume_for_price(
-                    connector_name=connector,
-                    trading_pair=trading_pair,
-                    price=buy_price_depth,
-                    is_buy=False
-                )
-                sell_vol = 0
-                if isinstance(sell_response, dict) and "result_quote_volume" in sell_response:
-                    sell_vol = sell_response["result_quote_volume"]
-                    import math
-                    if (
-                        sell_vol is None
-                        or (isinstance(sell_vol, float) and math.isnan(sell_vol))
-                        or str(sell_vol).lower() == "nan"
-                    ):
-                        sell_vol = 0
+                sell_vol = get_quote_volume(connector, trading_pair, buy_price_depth, is_buy=False)
                 st.metric(
                     "📊 Sell Depth",
-                    f"${float(sell_vol):,.0f}" if sell_vol != 0 else "N/A",
+                    f"${sell_vol:,.0f}" if sell_vol != 0 else "N/A",
                     help="Volume available when selling (hitting bids)"
                 )
             except Exception:
@@ -676,6 +706,22 @@ if st.session_state.selected_market.get("connector") and st.session_state.select
                 st.metric("📊 Sell Depth", f"${total_bid_volume:,.0f}", help="Total bid volume (for selling)")
         else:
             st.metric("📊 Sell Depth", "N/A")
+
+    if is_perpetual:
+        with header_cols[6]:
+            funding_data = get_funding_rate(connector, trading_pair)
+            if funding_data and "funding_rate" in funding_data:
+                funding_rate = float(funding_data["funding_rate"]) * 100
+                st.metric("💸 Funding Rate", f"{funding_rate:.4f}%")
+            else:
+                st.metric("💸 Funding Rate", "N/A")
+
+
+if st.session_state.selected_market.get("connector") and st.session_state.selected_market.get("trading_pair"):
+    st.fragment(render_market_header, run_every=MARKET_RUN_EVERY)(
+        st.session_state.selected_market["connector"],
+        st.session_state.selected_market["trading_pair"],
+    )
 else:
     st.info("Select account and pair to view extended market data")
 
@@ -686,7 +732,13 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
     base_token = html.escape(raw_base_token)
     quote_token = html.escape(raw_quote_token)
 
-    view = st.session_state.get("ob_view_filter", "All")
+    view = st.segmented_control(
+        "Order book view",
+        ["All", "Asks", "Bids"],
+        default="All",
+        key="ob_view_filter",
+        label_visibility="collapsed",
+    ) or "All"
     num_rows = 11 if view == "All" else ORDER_BOOK_ROWS
 
     css = """
@@ -748,7 +800,12 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
     price_color = "#f03b3b" if direction == "DOWN" else "#22c55e"
     spread = best_ask - best_bid if best_bid and best_ask else 0
 
+    precision = price_precision(display_price)
+
     def fmt_price(v):
+        return f"{float(v):,.{precision}f}"
+
+    def fmt_total(v):
         v = float(v)
         return f"{v:,.4f}" if v < 10000 else f"{v:,.2f}"
 
@@ -766,7 +823,7 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
             f'<div class="ob-depth-bar" style="width:{bar_pct}%"></div>'
             f'<span>{fmt_price(price)}</span>'
             f'<span>{fmt_qty(qty)}</span>'
-            f'<span>{fmt_price(total)}</span>'
+            f'<span>{fmt_total(total)}</span>'
             f'</div>'
         )
 
@@ -780,7 +837,7 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
             f'<div class="ob-depth-bar" style="width:{bar_pct}%"></div>'
             f'<span>{fmt_price(price)}</span>'
             f'<span>{fmt_qty(qty)}</span>'
-            f'<span>{fmt_price(total)}</span>'
+            f'<span>{fmt_total(total)}</span>'
             f'</div>'
         )
 
@@ -811,6 +868,11 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
 
     full_html = css + f'<div class="ob-wrap">{header_html}{rows_html}</div>'
     st.markdown(full_html, unsafe_allow_html=True)
+
+
+def render_orderbook_section(connector, trading_pair):
+    order_book, current_price = get_market_snapshot(connector, trading_pair)
+    render_coindcx_orderbook(order_book, current_price, trading_pair)
 
 
 def render_trade_panel(connector, trading_pair, current_price):
@@ -873,26 +935,26 @@ def render_trade_panel(connector, trading_pair, current_price):
     # Price input for limit orders
     price = None
     if order_type == "limit":
+        # A user-set price only applies to the market it was entered for
+        price_market = (connector, trading_pair)
         if (st.session_state.last_order_type != order_type or
-                not st.session_state.trade_price_set_by_user or
-                st.session_state.trade_custom_price is None):
-            st.session_state.trade_custom_price = current_price if current_price > 0 else 0.0
+                st.session_state.get("trade_price_market") != price_market or
+                not st.session_state.trade_price_set_by_user):
+            st.session_state.trade_price = float(current_price) if current_price > 0 else 0.0
             st.session_state.trade_price_set_by_user = False
+            st.session_state.trade_price_market = price_market
 
         st.session_state.last_order_type = order_type
 
+        precision = price_precision(current_price or st.session_state.trade_price)
         price = st.number_input(
             "Price",
             min_value=0.0,
-            value=st.session_state.trade_custom_price,
-            format="%.4f",
+            step=10 ** -precision,
+            format=f"%.{precision}f",
             key="trade_price",
             on_change=lambda: setattr(st.session_state, 'trade_price_set_by_user', True)
         )
-
-        if price != st.session_state.trade_custom_price:
-            st.session_state.trade_custom_price = price
-            st.session_state.trade_price_set_by_user = True
 
         if price > 0 and amount > 0:
             if is_quote:
@@ -912,10 +974,19 @@ def render_trade_panel(connector, trading_pair, current_price):
     )
 
     if place_clicked:
-        if amount > 0:
+        conversion_price = price if order_type == "limit" and price else current_price
+        if amount <= 0:
+            st.error("Please enter a valid amount")
+        elif order_type == "limit" and not price:
+            st.error("Please enter a limit price")
+        elif is_quote and conversion_price <= 0:
+            st.error(
+                f"Can't convert {quote_token} to {base_token}: no price is available for {trading_pair}. "
+                f"Enter the amount in {base_token} or try again."
+            )
+        else:
             final_amount = amount
-            conversion_price = price if order_type == "limit" and price else current_price
-            if is_quote and conversion_price > 0:
+            if is_quote:
                 final_amount = amount / conversion_price
                 st.success(f"Converting {amount} {quote_token} → {final_amount:.6f} {base_token}")
 
@@ -933,8 +1004,6 @@ def render_trade_panel(connector, trading_pair, current_price):
 
             with st.spinner("Placing order..."):
                 place_order(order_data)
-        else:
-            st.error("Please enter a valid amount")
 
     st.write("")
     st.info(f"🎯 {st.session_state.selected_connector}\n{st.session_state.selected_market['trading_pair']}")
@@ -945,19 +1014,11 @@ def show_trading_data():
     trading_pair = st.session_state.selected_market.get("trading_pair")
 
     if not connector or not trading_pair:
-        st.warning("Please select an account and trading pair")
-        return
+        return  # the market header already asks for an account and pair
 
     st.divider()
 
-    snapshot = st.session_state.get("market_snapshot", {})
-    if snapshot.get("connector") == connector and snapshot.get("trading_pair") == trading_pair:
-        order_book = snapshot.get("order_book", {})
-        current_price = snapshot.get("current_price", 0.0)
-    else:
-        order_book = get_order_book(connector, trading_pair, depth=ORDER_BOOK_ROWS)
-        prices = get_price_map(connector, trading_pair)
-        current_price = get_current_price(prices, trading_pair, order_book)
+    _, current_price = get_market_snapshot(connector, trading_pair)
 
     ob_col, trade_col = st.columns([1, 1])
 
@@ -967,8 +1028,9 @@ def show_trading_data():
             st.subheader("📊 Order Book")
         with chart_btn_col:
             if st.button("📈 Price Chart", use_container_width=True, key="open_price_chart"):
-                show_price_chart_dialog(backend_api_client, connector, trading_pair)
-        render_coindcx_orderbook(order_book, current_price, trading_pair)
+                show_price_chart_dialog(backend_api_client, connector, trading_pair,
+                                        account_name=st.session_state.selected_account)
+        st.fragment(render_orderbook_section, run_every=MARKET_RUN_EVERY)(connector, trading_pair)
 
     with trade_col:
         st.subheader("💸 Execute Trade")
@@ -978,8 +1040,8 @@ def show_trading_data():
     st.divider()
 
     # Get positions and orders
-    positions = get_positions()
-    orders = get_active_orders()
+    positions = get_positions(st.session_state.selected_account)
+    orders = get_active_orders(st.session_state.selected_account)
 
     # Display in tabs - Balances first
     tab1, tab2, tab3, tab4 = st.tabs(["💰 Balances", "📊 Positions", "📋 Active Orders", "📜 Order History"])
@@ -1163,18 +1225,6 @@ def render_balances_table():
         }
     )
 
-
-# Auto-refresh logic - only if user is not actively trading
-if st.session_state.auto_refresh_enabled and not st.session_state.trade_price_set_by_user:
-    # Check if it's time to refresh
-    current_time = time.time()
-    time_since_last_refresh = current_time - st.session_state.last_refresh_time
-
-    if time_since_last_refresh >= REFRESH_INTERVAL:
-        # Update last refresh time and rerun
-        st.session_state.last_refresh_time = current_time
-        time.sleep(0.1)  # Small delay to prevent rapid refreshes
-        st.rerun()
 
 # Display trading data
 show_trading_data()

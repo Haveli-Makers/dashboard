@@ -8,37 +8,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from frontend.candles import (
+    candles_error,
+    fetch_candles,
+    get_candle_connectors,
+    get_candle_intervals,
+    is_valid_pair,
+)
 from frontend.email_utils import dataframes_to_xlsx_bytes
 from frontend.st_utils import get_backend_api_client, initialize_st_page
-
-FALLBACK_CONNECTORS = ["binance_perpetual", "binance", "gate_io", "gate_io_perpetual", "kucoin", "kucoin_perpetual", "okx"]
-FALLBACK_INTERVALS = ["1m", "3m", "5m", "15m", "1h", "4h", "1d", "1s"]
-UNAVAILABLE_CONNECTORS = {"ascend_ex"}
-
-PAIR_FORMAT = re.compile(r"^[A-Z0-9]+-[A-Z0-9]+$")
-
-
-def _is_valid_pair(pair):
-    """Hummingbot candle feeds split pairs on '-', so only BASE-QUOTE is accepted."""
-    return bool(PAIR_FORMAT.match(pair))
-
-
-def _candles_error(trading_pair, connector, raw_error):
-    """Translate raw exchange/API errors into a message a user can act on."""
-    error = str(raw_error).lower()
-    if "not enough values to unpack" in error or "invalid pair format" in error:
-        return f"{trading_pair} is not in BASE-QUOTE format. Enter it like USDT-INR or BTC-USDT."
-    if "invalid symbol" in error or "-1121" in error or "not found" in error or "unknown symbol" in error:
-        return f"{trading_pair} is not available on {connector}. Check the pair name or pick another exchange."
-    if "no historical data" in error:
-        return f"No candles found for {trading_pair} in the selected date range."
-    if "429" in error or "too many requests" in error or "rate limit" in error:
-        return f"{connector} is rate limiting requests. Please wait a minute and try again."
-    if "timeout" in error or "timed out" in error:
-        return f"The request for {trading_pair} timed out. Try a shorter date range or try again later."
-    if "connect" in error or "503" in error or "502" in error or "unavailable" in error:
-        return f"Could not reach {connector} right now. Please try again later."
-    return f"Could not fetch candles for {trading_pair} on {connector}."
 
 
 def _safe_filename_part(value):
@@ -79,14 +57,7 @@ def _build_all_pairs_downloads(candles_by_pair, connector, date_range):
 initialize_st_page(title="Download Candles", icon="💾")
 backend_api_client = get_backend_api_client()
 
-if "download_candles__connectors" not in st.session_state:
-    try:
-        available_connectors = backend_api_client.market_data.get_available_candle_connectors()
-        connectors = sorted(available_connectors) if available_connectors else FALLBACK_CONNECTORS
-    except Exception:
-        connectors = FALLBACK_CONNECTORS
-    st.session_state["download_candles__connectors"] = [c for c in connectors if c not in UNAVAILABLE_CONNECTORS]
-available_connectors = st.session_state["download_candles__connectors"]
+available_connectors = get_candle_connectors(backend_api_client)
 
 st.markdown(
     """
@@ -105,15 +76,7 @@ with c1:
     connector = st.selectbox("Exchange", available_connectors, index=0)
     trading_pairs = st.text_input("Trading Pairs (BTC-USDT, ETH-USDT)", value="BTC-USDT")
 with c2:
-    intervals_cache = st.session_state.setdefault("download_candles__intervals_by_connector", {})
-    if connector not in intervals_cache:
-        try:
-            connector_intervals = backend_api_client.market_data.get_candle_intervals(connector)
-            intervals_cache[connector] = connector_intervals if connector_intervals else FALLBACK_INTERVALS
-        except Exception:
-            intervals_cache[connector] = FALLBACK_INTERVALS
-    interval_options = intervals_cache[connector]
-    interval = st.selectbox("Interval", options=interval_options)
+    interval = st.selectbox("Interval", options=get_candle_intervals(backend_api_client, connector))
 with c3:
     coarse_interval = interval in ("1h", "4h", "1d")
     start_date = st.date_input("Start Date", value=datetime.now().date() - timedelta(days=1))
@@ -139,7 +102,7 @@ if get_data_button:
 
     valid_by_key = {}
     for typed_pair in typed_pairs:
-        if _is_valid_pair(typed_pair):
+        if is_valid_pair(typed_pair):
             valid_by_key.setdefault(_pair_key(typed_pair), typed_pair)
 
     pairs_list = []
@@ -180,20 +143,12 @@ if get_data_button:
     progress = st.progress(0.0, text="Fetching candles...")
     for i, trading_pair in enumerate(pairs_list):
         progress.progress(i / len(pairs_list), text=f"Fetching candles for {trading_pair}...")
-        try:
-            candles = backend_api_client.market_data.get_historical_candles(
-                connector_name=connector,
-                trading_pair=trading_pair,
-                interval=interval,
-                start_time=int(start_datetime.timestamp()),
-                end_time=int(end_datetime.timestamp())
-            )
-        except Exception as e:
-            errors.append((trading_pair, str(e)))
-            continue
-
-        if isinstance(candles, dict) and "error" in candles:
-            errors.append((trading_pair, str(candles["error"])))
+        candles, error = fetch_candles(
+            backend_api_client, connector, trading_pair, interval,
+            start_datetime.timestamp(), end_datetime.timestamp()
+        )
+        if error:
+            errors.append((trading_pair, error))
             continue
         if not candles:
             errors.append((trading_pair, "No historical data available"))
@@ -223,7 +178,7 @@ if result:
 
     if result["errors"]:
         st.warning("Some pairs could not be fetched:\n- " + "\n- ".join(
-            _candles_error(pair, result["connector"], raw) for pair, raw in result["errors"]
+            candles_error(pair, result["connector"], raw) for pair, raw in result["errors"]
         ))
         with st.expander("More error details"):
             st.code("\n".join(f"{pair}: {raw}" for pair, raw in result["errors"]), language="text")
