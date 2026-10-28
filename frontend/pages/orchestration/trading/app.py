@@ -21,7 +21,6 @@ initialize_st_page(
 
 # Initialize backend client
 backend_api_client = get_backend_api_client()
-CURRENCY = get_currency_symbol()
 
 # Initialize session state
 if "selected_account" not in st.session_state:
@@ -160,25 +159,10 @@ def get_quote_volume(connector, trading_pair, price, is_buy):
 # Quote assets priced in US dollars; converted to INR when the server displays in ₹
 USD_QUOTES = {"USDT", "USD", "USDC"}
 FX_PAIR = "USDT-INR"
-USDT_INR_RATE = 1.0  # Resolved once the exchange is selected
-
-
-def parse_prices(price_response):
-    """Normalize the different get_prices response formats into {trading_pair: price}."""
-    if isinstance(price_response, dict):
-        if "status" in price_response and price_response.get("status") == "success":
-            return price_response.get("data", {})
-        elif "prices" in price_response:
-            return price_response.get("prices", {})
-        return price_response
-    elif isinstance(price_response, list):
-        return {item.get("trading_pair", "unknown"): item.get("price", 0) for item in price_response if
-                isinstance(item, dict)}
-    return {}
 
 
 @st.cache_data(ttl=REFRESH_INTERVAL, show_spinner=False)
-def fetch_usdt_inr_rate(connector_name):
+def _fetch_usdt_inr_rate(server, connector_name):
     """Fetch the USDT-INR price from the exchange."""
     try:
         book = backend_api_client.market_data.get_order_book(
@@ -198,41 +182,44 @@ def fetch_usdt_inr_rate(connector_name):
     except Exception:
         pass
 
-    response = backend_api_client.market_data.get_prices(
-        connector_name=connector_name,
-        trading_pairs=[FX_PAIR]
-    )
-    price = parse_prices(response).get(FX_PAIR)
+    prices = get_price_map(connector_name, FX_PAIR, quiet=True)
+    price = prices.get(FX_PAIR)
     return float(price) if price and float(price) > 0 else None
 
 
-def resolve_usdt_inr_rate(connector_name):
-    """Rate for converting USD-quoted values to the display currency."""
-    global CURRENCY
-    if CURRENCY != "₹":
-        return 1.0
+def resolve_currency_and_rate(connector_name):
+    """Resolve the display currency and USDT→display-currency rate.
+
+    Returns (currency_symbol, rate) without mutating any global state.
+    """
+    currency = get_currency_symbol()
+    if currency != "₹":
+        return currency, 1.0
     rate = None
     if connector_name:
         try:
-            rate = fetch_usdt_inr_rate(connector_name)
+            rate = _fetch_usdt_inr_rate(get_server_cache_key(), connector_name)
         except Exception:
             rate = None
     if not rate:
         st.warning(f"Could not fetch {FX_PAIR} price; showing USD-quoted values in $.")
-        CURRENCY = "$"
-        return 1.0
-    return rate
+        return "$", 1.0
+    return currency, rate
 
 
-def quote_rate(trading_pair=None):
+def quote_rate(trading_pair, usdt_inr_rate):
     if not trading_pair or "-" not in str(trading_pair):
-        return USDT_INR_RATE
+        return usdt_inr_rate
     quote = str(trading_pair).split("-")[-1].upper()
-    return USDT_INR_RATE if quote in USD_QUOTES else 1.0
+    return usdt_inr_rate if quote in USD_QUOTES else 1.0
 
 
-def convert_price_columns(df, columns):
-    rates = df["trading_pair"].map(quote_rate) if "trading_pair" in df.columns else USDT_INR_RATE
+def convert_price_columns(df, columns, usdt_inr_rate):
+    rates = (
+        df["trading_pair"].map(lambda tp: quote_rate(tp, usdt_inr_rate))
+        if "trading_pair" in df.columns
+        else usdt_inr_rate
+    )
     for col in columns:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce") * rates
@@ -245,7 +232,16 @@ def convert_records(records, keys, rate):
     converted = []
     for record in records:
         if isinstance(record, dict):
-            record = {**record, **{k: float(record[k]) * rate for k in keys if record.get(k) is not None}}
+            updates = {}
+            for k in keys:
+                val = record.get(k)
+                if val is None:
+                    continue
+                try:
+                    updates[k] = float(val) * rate
+                except (TypeError, ValueError):
+                    pass
+            record = {**record, **updates}
         converted.append(record)
     return converted
 
@@ -427,7 +423,7 @@ def render_positions_table(positions_data):
         st.info("No open positions found.")
         return
 
-    df = convert_price_columns(df, ["entry_price", "mark_price", "unrealized_pnl"])
+    df = convert_price_columns(df, ["entry_price", "mark_price", "unrealized_pnl"], USDT_INR_RATE)
 
     if 'amount' in df.columns and 'entry_price' in df.columns:
         df['original_value'] = df['amount'] * df['entry_price']
@@ -561,7 +557,7 @@ def render_orders_table(orders_data):
 
     st.subheader("📋 Active Orders")
 
-    df_with_cancel = convert_price_columns(df.copy(), ["price"])
+    df_with_cancel = convert_price_columns(df.copy(), ["price"], USDT_INR_RATE)
     df_with_cancel["cancel"] = False
 
     column_config = {
@@ -688,7 +684,7 @@ if connector and trading_pair:
 else:
     st.session_state.selected_market = {}
 
-USDT_INR_RATE = resolve_usdt_inr_rate(st.session_state.selected_connector)
+CURRENCY, USDT_INR_RATE = resolve_currency_and_rate(st.session_state.selected_connector)
 
 st.divider()
 market_title_col, refresh_toggle_col, refresh_btn_col = st.columns([4, 1, 1])
@@ -720,7 +716,7 @@ def render_market_header(connector, trading_pair):
         ask_price = float(order_book["asks"][0]["price"]) if order_book["asks"] else 0
     precision = price_precision(bid_price or ask_price)
 
-    display_rate = quote_rate(trading_pair)
+    display_rate = quote_rate(trading_pair, USDT_INR_RATE)
 
     is_perpetual = "perpetual" in connector.lower()
     header_cols = st.columns(7 if is_perpetual else 6)
@@ -1033,7 +1029,7 @@ def render_trade_panel(connector, trading_pair, current_price):
             on_change=lambda: setattr(st.session_state, 'trade_price_set_by_user', True)
         )
 
-        display_rate = quote_rate(trading_pair)
+        display_rate = quote_rate(trading_pair, USDT_INR_RATE)
         if price > 0 and display_rate != 1.0:
             st.caption(f"≈ {CURRENCY}{price * display_rate:,.2f}")
 
@@ -1274,7 +1270,7 @@ def render_balances_table():
 
     st.subheader(f"💰 Account Balances - {st.session_state.selected_account}")
 
-    df = convert_price_columns(df, ["price", "value"])
+    df = convert_price_columns(df, ["price", "value"], USDT_INR_RATE)
 
     total_value = df['value'].sum()
     st.metric("Total Portfolio Value", f"{CURRENCY}{total_value:,.2f}")

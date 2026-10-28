@@ -99,7 +99,7 @@ SERVER_QUERY_PARAM = "server"
 
 def _init_selected_server_name(server_names: list[str]) -> None:
     """Restore the selected server from the URL (survives page refresh), else default to the first one."""
-    if 'selected_server_name' in st.session_state:
+    if 'selected_server_name' in st.session_state or not server_names:
         return
     requested = st.query_params.get(SERVER_QUERY_PARAM)
     st.session_state.selected_server_name = requested if requested in server_names else server_names[0]
