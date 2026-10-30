@@ -111,7 +111,7 @@ def get_candle_intervals(client, connector):
 
 def _base_connector(connector):
     """Strip account-specific suffixes (e.g. coindcx__org → coindcx)."""
-    return connector.split("__")[0] if "__" in connector else connector
+    return connector.split("__")[0]
 
 
 def default_candle_source(connector, candle_connectors):
@@ -119,12 +119,10 @@ def default_candle_source(connector, candle_connectors):
     if connector in candle_connectors:
         return connector
     base = _base_connector(connector)
-    if base != connector and base in candle_connectors:
-        return base
-    for suffix in NO_FEED_SUFFIXES:
-        stripped = base if base != connector else connector
-        if stripped.endswith(suffix) and stripped[:-len(suffix)] in candle_connectors:
-            return stripped[:-len(suffix)]
+    for suffix in ("", *NO_FEED_SUFFIXES):
+        candidate = base[:-len(suffix)] if suffix and base.endswith(suffix) else base
+        if candidate != connector and candidate in candle_connectors:
+            return candidate
     return None
 
 
