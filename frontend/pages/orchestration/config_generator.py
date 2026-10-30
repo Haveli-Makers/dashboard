@@ -34,7 +34,7 @@ def _format_option(option: str) -> str:
 
 
 def _resolve_initial_selection() -> str:
-    requested_slug = st.query_params
+    requested_slug = st.query_params.get("config")
 
     if requested_slug:
         for name, meta in CONFIG_PAGES.items():
@@ -49,9 +49,9 @@ def _resolve_initial_selection() -> str:
 
 
 def _apply_query_param(slug: str) -> None:
-    current_slug = st.query_params
+    current_slug = st.query_params.get("config")
     if current_slug != slug:
-        st.query_params = slug
+        st.query_params["config"] = slug
 
 
 def _render_config_page(module_path: str, display_name: str) -> None:

@@ -8,7 +8,15 @@ import streamlit as st
 
 from frontend.candles import is_valid_pair, market_data_error
 from frontend.components.price_chart import show_price_chart_dialog
-from frontend.st_utils import get_backend_api_client, get_server_cache_key, initialize_st_page
+from frontend.st_utils import (
+    INR_QUOTES,
+    USD_QUOTES,
+    _fetch_fx_rate,
+    get_backend_api_client,
+    get_server_cache_key,
+    initialize_st_page,
+    resolve_currency_and_rate,
+)
 from frontend.utils import price_precision
 
 # Enable nested async
@@ -80,7 +88,7 @@ def _fetch_funding_info(server, connector, trading_pair):
 
 
 def clear_market_data_cache():
-    for cached_fetch in (_fetch_order_book, _fetch_prices, _fetch_quote_volume, _fetch_funding_info):
+    for cached_fetch in (_fetch_order_book, _fetch_prices, _fetch_quote_volume, _fetch_funding_info, _fetch_fx_rate):
         cached_fetch.clear()
 
 
@@ -156,6 +164,30 @@ def get_quote_volume(connector, trading_pair, price, is_buy):
     return 0 if math.isnan(volume) else volume
 
 
+def quote_rate(trading_pair, usdt_inr_rate):
+    if not trading_pair or "-" not in str(trading_pair):
+        return usdt_inr_rate
+    _, quote = split_trading_pair(str(trading_pair))
+    quote_base = quote.split("-")[0].upper() if "-" in quote else quote.upper()
+    if quote_base in INR_QUOTES:
+        return 1.0
+    if quote_base in USD_QUOTES:
+        return usdt_inr_rate
+    return 1.0
+
+
+def convert_price_columns(df, columns, usdt_inr_rate):
+    rates = (
+        df["trading_pair"].map(lambda tp: quote_rate(tp, usdt_inr_rate))
+        if "trading_pair" in df.columns
+        else usdt_inr_rate
+    )
+    for col in columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce") * rates
+    return df
+
+
 def get_accounts_and_credentials():
     """Get available accounts and their credentials."""
     try:
@@ -183,7 +215,6 @@ def get_positions(account_name=None):
         elif isinstance(response, dict) and response.get("status") == "success":
             return response.get("data", [])
         elif isinstance(response, dict) and "data" in response:
-            # Handle the actual API response format
             return response.get("data", [])
         return []
     except Exception as e:
@@ -198,15 +229,12 @@ def get_active_orders(account_name=None):
         if account_name:
             kwargs["account_names"] = [account_name]
         response = backend_api_client.trading.get_active_orders(**kwargs)
-        # Handle both response formats
         if isinstance(response, list):
             return response
         elif isinstance(response, dict):
-            # Check for different response formats
             if response.get("status") == "success":
                 return response.get("data", [])
             elif "data" in response:
-                # Handle response format like {"data": [...], "pagination": {...}}
                 return response.get("data", [])
         return []
     except Exception as e:
@@ -226,9 +254,7 @@ def _extract_data(response):
 
 
 def get_order_history(start_date=None, end_date=None, tz=None):
-    """
-    Get order history for [start_date, end_date] (inclusive, local dates).
-    """
+    """Get order history for [start_date, end_date] (inclusive, local dates)."""
     start_ms = end_ms = None
     if start_date is not None and end_date is not None:
         tz = tz or datetime.datetime.now().astimezone().tzinfo
@@ -266,7 +292,6 @@ def get_order_book(connector, trading_pair, depth=10, quiet=False):
     try:
         response = _fetch_order_book(get_server_cache_key(), connector, trading_pair, depth)
 
-        # Handle both response formats
         if isinstance(response, dict):
             if "status" in response and response.get("status") == "success":
                 return response.get("data", {})
@@ -282,10 +307,8 @@ def get_order_book(connector, trading_pair, depth=10, quiet=False):
 def get_funding_rate(connector, trading_pair):
     """Get funding rate for perpetual contracts."""
     try:
-        # Only try to get funding rate for perpetual connectors
         if "perpetual" in connector.lower():
             response = _fetch_funding_info(get_server_cache_key(), connector, trading_pair)
-            # Handle both response formats
             if isinstance(response, dict):
                 if "status" in response and response.get("status") == "success":
                     return response.get("data", {})
@@ -337,25 +360,24 @@ def render_positions_table(positions_data):
         st.info("No open positions found.")
         return
 
-    # Convert to DataFrame for better display
     df = pd.DataFrame(positions_data)
     if df.empty:
         st.info("No open positions found.")
         return
 
-    # Calculate original value (amount * entry_price)
+    df = convert_price_columns(df, ["entry_price", "mark_price", "unrealized_pnl"], USDT_INR_RATE)
+
     if 'amount' in df.columns and 'entry_price' in df.columns:
         df['original_value'] = df['amount'] * df['entry_price']
 
     st.subheader("🎯 Open Positions")
 
-    # Calculate and display summary metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         total_unrealized_pnl = df['unrealized_pnl'].sum() if 'unrealized_pnl' in df.columns else 0
         st.metric(
             "Total Unrealized PnL",
-            f"${total_unrealized_pnl:,.2f}",
+            f"{CURRENCY}{total_unrealized_pnl:,.2f}",
             delta=None,
             delta_color="normal" if total_unrealized_pnl >= 0 else "inverse"
         )
@@ -363,9 +385,8 @@ def render_positions_table(positions_data):
         total_original_value = abs(df['original_value']).sum() if 'original_value' in df.columns else 0
         st.metric(
             "Total Position Amount",
-            f"${abs(total_original_value):,.2f}"
+            f"{CURRENCY}{abs(total_original_value):,.2f}"
         )
-    # Separate long and short positions for hedging analysis
     long_positions = df[df['amount'] > 0] if 'amount' in df.columns else pd.DataFrame()
     short_positions = df[df['amount'] < 0] if 'amount' in df.columns else pd.DataFrame()
     with col3:
@@ -374,7 +395,7 @@ def render_positions_table(positions_data):
             if not long_positions.empty and 'original_value' in long_positions.columns
             else 0
         )
-        st.metric("Long Exposure", f"${abs(long_value):,.2f}", help="Total value of long positions")
+        st.metric("Long Exposure", f"{CURRENCY}{abs(long_value):,.2f}", help="Total value of long positions")
 
     with col4:
         short_value = (
@@ -383,9 +404,8 @@ def render_positions_table(positions_data):
             else 0
         )
         st.metric(
-            "Short Exposure", f"${abs(short_value):,.2f}", help="Total value of short positions")
+            "Short Exposure", f"{CURRENCY}{abs(short_value):,.2f}", help="Total value of short positions")
 
-    # Calculate hedge ratio if we have both long and short positions
     if long_value != 0 and short_value != 0:
         hedge_ratio = min(abs(short_value), abs(long_value)) / max(abs(short_value), abs(long_value)) * 100
         st.info(f"📊 **Hedge Ratio**: {hedge_ratio:.1f}% (Higher = More Hedged)")
@@ -394,7 +414,6 @@ def render_positions_table(positions_data):
     elif short_value > 0 and long_value == 0:
         st.warning("⚠️ **Portfolio is fully SHORT** - No long hedging")
 
-    # Display positions table with enhanced formatting
     st.dataframe(
         df,
         use_container_width=True,
@@ -407,25 +426,24 @@ def render_positions_table(positions_data):
             ),
             "entry_price": st.column_config.NumberColumn(
                 "Entry Price",
-                format="$%.4f"
+                format=f"{CURRENCY}%.4f"
             ),
             "original_value": st.column_config.NumberColumn(
                 "Original Value",
-                format="$%.2f",
+                format=f"{CURRENCY}%.2f",
                 help="Amount × Entry Price"
             ),
             "mark_price": st.column_config.NumberColumn(
                 "Mark Price",
-                format="$%.4f"
+                format=f"{CURRENCY}%.4f"
             ),
             "unrealized_pnl": st.column_config.NumberColumn(
                 "Unrealized PnL",
-                format="$%.2f"
+                format=f"{CURRENCY}%.2f"
             )
         }
     )
 
-    # Show separate long/short breakdown if there are both types
     if not long_positions.empty and not short_positions.empty:
         st.divider()
 
@@ -435,15 +453,15 @@ def render_positions_table(positions_data):
             st.subheader("🟢 Long Positions")
             if not long_positions.empty:
                 long_pnl = long_positions['unrealized_pnl'].sum() if 'unrealized_pnl' in long_positions.columns else 0
-                st.caption(f"PnL: ${long_pnl:,.2f}")
+                st.caption(f"PnL: {CURRENCY}{long_pnl:,.2f}")
                 st.dataframe(
                     long_positions,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
                         "amount": st.column_config.NumberColumn("Amount", format="%.6f"),
-                        "entry_price": st.column_config.NumberColumn("Entry Price", format="$%.4f"),
-                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format="$%.2f")
+                        "entry_price": st.column_config.NumberColumn("Entry Price", format=f"{CURRENCY}%.4f"),
+                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format=f"{CURRENCY}%.2f")
                     }
                 )
 
@@ -451,15 +469,15 @@ def render_positions_table(positions_data):
             st.subheader("🔴 Short Positions")
             if not short_positions.empty:
                 short_pnl = short_positions['unrealized_pnl'].sum() if 'unrealized_pnl' in short_positions.columns else 0
-                st.caption(f"PnL: ${short_pnl:,.2f}")
+                st.caption(f"PnL: {CURRENCY}{short_pnl:,.2f}")
                 st.dataframe(
                     short_positions,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
                         "amount": st.column_config.NumberColumn("Amount", format="%.6f"),
-                        "entry_price": st.column_config.NumberColumn("Entry Price", format="$%.4f"),
-                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format="$%.2f")
+                        "entry_price": st.column_config.NumberColumn("Entry Price", format=f"{CURRENCY}%.4f"),
+                        "unrealized_pnl": st.column_config.NumberColumn("PnL", format=f"{CURRENCY}%.2f")
                     }
                 )
     elif not long_positions.empty:
@@ -474,7 +492,6 @@ def render_orders_table(orders_data):
         st.info("No active orders found.")
         return
 
-    # Convert to DataFrame
     df = pd.DataFrame(orders_data)
     if df.empty:
         st.info("No active orders found.")
@@ -482,11 +499,9 @@ def render_orders_table(orders_data):
 
     st.subheader("📋 Active Orders")
 
-    # Add cancel column to dataframe
     df_with_cancel = df.copy()
     df_with_cancel["cancel"] = False
 
-    # Create column configurations based on what's available in the data
     column_config = {
         "cancel": st.column_config.CheckboxColumn(
             "Cancel",
@@ -495,7 +510,7 @@ def render_orders_table(orders_data):
         ),
         "price": st.column_config.NumberColumn(
             "Price",
-            format="$%.4f"
+            format="%.4f"
         ),
         "amount": st.column_config.NumberColumn(
             "Amount",
@@ -515,7 +530,6 @@ def render_orders_table(orders_data):
         )
     }
 
-    # Add cancel button functionality
     edited_df = st.data_editor(
         df_with_cancel,
         column_config=column_config,
@@ -525,7 +539,6 @@ def render_orders_table(orders_data):
         key="orders_editor"
     )
 
-    # Handle order cancellation
     if "cancel" in edited_df.columns:
         selected_orders = edited_df[edited_df["cancel"]]
         if not selected_orders.empty and st.button(f"❌ Cancel Selected ({len(selected_orders)}) Orders",
@@ -594,7 +607,6 @@ with conn_col:
         st.error("No credentials available")
         connector = None
     if connector is None:
-        # Don't keep trading on the previous account's exchange
         st.session_state.selected_connector = None
         st.session_state.selected_market = {}
 
@@ -613,6 +625,8 @@ if connector and trading_pair:
     st.session_state.selected_market = {"connector": connector, "trading_pair": trading_pair}
 else:
     st.session_state.selected_market = {}
+
+CURRENCY, USDT_INR_RATE = resolve_currency_and_rate(st.session_state.selected_connector)
 
 st.divider()
 market_title_col, refresh_toggle_col, refresh_btn_col = st.columns([4, 1, 1])
@@ -635,6 +649,7 @@ MARKET_RUN_EVERY = REFRESH_INTERVAL if st.session_state.auto_refresh_enabled els
 
 
 def render_market_header(connector, trading_pair):
+    CURRENCY, USDT_INR_RATE = resolve_currency_and_rate(connector)
     order_book = get_order_book(connector, trading_pair, depth=ORDER_BOOK_ROWS)
 
     bid_price = 0
@@ -644,21 +659,26 @@ def render_market_header(connector, trading_pair):
         ask_price = float(order_book["asks"][0]["price"]) if order_book["asks"] else 0
     precision = price_precision(bid_price or ask_price)
 
+    display_rate = quote_rate(trading_pair, USDT_INR_RATE)
+
     is_perpetual = "perpetual" in connector.lower()
     header_cols = st.columns(7 if is_perpetual else 6)
     bid_col, ask_col, spread_col, depth_pct_col, buy_depth_col, sell_depth_col = header_cols[:6]
 
     with bid_col:
-        st.metric("📈 Bid Price", f"${bid_price:,.{precision}f}" if bid_price else "N/A")
+        full_bid = f"{CURRENCY}{bid_price * display_rate:,.{precision}f}" if bid_price else "N/A"
+        st.metric("📈 Bid Price", full_bid, help=full_bid)
 
     with ask_col:
-        st.metric("📉 Ask Price", f"${ask_price:,.{precision}f}" if ask_price else "N/A")
+        full_ask = f"{CURRENCY}{ask_price * display_rate:,.{precision}f}" if ask_price else "N/A"
+        st.metric("📉 Ask Price", full_ask, help=full_ask)
 
     with spread_col:
         if bid_price > 0 and ask_price > 0:
             spread = ask_price - bid_price
             spread_pct = (spread / bid_price) * 100
-            st.metric("↔️ Spread", f"${spread:,.{precision}f}", delta=f"{spread_pct:.4f}%")
+            full_spread = f"{CURRENCY}{spread * display_rate:,.{precision}f}"
+            st.metric("↔️ Spread", full_spread, delta=f"{spread_pct:.4f}%", help=full_spread)
         else:
             st.metric("↔️ Spread", "N/A")
 
@@ -679,16 +699,14 @@ def render_market_header(connector, trading_pair):
             sell_price_depth = ask_price * (1 + depth_factor)
             try:
                 buy_vol = get_quote_volume(connector, trading_pair, sell_price_depth, is_buy=True)
-                st.metric(
-                    "📊 Buy Depth",
-                    f"${buy_vol:,.0f}" if buy_vol != 0 else "N/A",
-                    help="Volume available when buying (hitting asks)"
-                )
+                full_buy = f"{CURRENCY}{buy_vol * display_rate:,.0f}" if buy_vol != 0 else "N/A"
+                st.metric(f"📊 Buy Depth ({CURRENCY})", full_buy, help=full_buy)
             except Exception:
-                total_ask_volume = sum(float(ask["amount"]) * float(ask["price"]) for ask in order_book["asks"])
-                st.metric("📊 Buy Depth", f"${total_ask_volume:,.0f}", help="Total ask volume (for buying)")
+                total_ask_volume = sum(float(ask["amount"]) * float(ask["price"]) for ask in order_book["asks"]) * display_rate
+                full_buy = f"{CURRENCY}{total_ask_volume:,.0f}"
+                st.metric(f"📊 Buy Depth ({CURRENCY})", full_buy, help=full_buy)
         else:
-            st.metric("📊 Buy Depth", "N/A")
+            st.metric(f"📊 Buy Depth ({CURRENCY})", "N/A")
 
     with sell_depth_col:
         if order_book and "bids" in order_book and "asks" in order_book and bid_price > 0 and ask_price > 0:
@@ -696,16 +714,14 @@ def render_market_header(connector, trading_pair):
             buy_price_depth = bid_price * (1 - depth_factor)
             try:
                 sell_vol = get_quote_volume(connector, trading_pair, buy_price_depth, is_buy=False)
-                st.metric(
-                    "📊 Sell Depth",
-                    f"${sell_vol:,.0f}" if sell_vol != 0 else "N/A",
-                    help="Volume available when selling (hitting bids)"
-                )
+                full_sell = f"{CURRENCY}{sell_vol * display_rate:,.0f}" if sell_vol != 0 else "N/A"
+                st.metric(f"📊 Sell Depth ({CURRENCY})", full_sell, help=full_sell)
             except Exception:
-                total_bid_volume = sum(float(bid["amount"]) * float(bid["price"]) for bid in order_book["bids"])
-                st.metric("📊 Sell Depth", f"${total_bid_volume:,.0f}", help="Total bid volume (for selling)")
+                total_bid_volume = sum(float(bid["amount"]) * float(bid["price"]) for bid in order_book["bids"]) * display_rate
+                full_sell = f"{CURRENCY}{total_bid_volume:,.0f}"
+                st.metric(f"📊 Sell Depth ({CURRENCY})", full_sell, help=full_sell)
         else:
-            st.metric("📊 Sell Depth", "N/A")
+            st.metric(f"📊 Sell Depth ({CURRENCY})", "N/A")
 
     if is_perpetual:
         with header_cols[6]:
@@ -930,12 +946,12 @@ def render_trade_panel(connector, trading_pair, current_price):
             st.caption(f"≈ {base_equivalent:.6f} {base_token}")
         else:
             quote_equivalent = amount * current_price
-            st.caption(f"≈ {quote_equivalent:.2f} {quote_token}")
+            precision = price_precision(quote_equivalent) if quote_equivalent > 0 else 2
+            st.caption(f"≈ {quote_equivalent:,.{precision}f} {quote_token}")
 
     # Price input for limit orders
     price = None
     if order_type == "limit":
-        # A user-set price only applies to the market it was entered for
         price_market = (connector, trading_pair)
         if (st.session_state.last_order_type != order_type or
                 st.session_state.get("trade_price_market") != price_market or
@@ -948,7 +964,7 @@ def render_trade_panel(connector, trading_pair, current_price):
 
         precision = price_precision(current_price or st.session_state.trade_price)
         price = st.number_input(
-            "Price",
+            f"Price ({quote_token})",
             min_value=0.0,
             step=10 ** -precision,
             format=f"%.{precision}f",
@@ -956,11 +972,18 @@ def render_trade_panel(connector, trading_pair, current_price):
             on_change=lambda: setattr(st.session_state, 'trade_price_set_by_user', True)
         )
 
+        display_rate = quote_rate(trading_pair, USDT_INR_RATE)
+        if price > 0 and display_rate != 1.0:
+            display_precision = price_precision(price * display_rate)
+            st.caption(f"≈ {CURRENCY}{price * display_rate:,.{display_precision}f}")
+
         if price > 0 and amount > 0:
             if is_quote:
                 st.caption(f"At limit price: ≈ {amount / price:.6f} {base_token}")
             else:
-                st.caption(f"At limit price: ≈ {amount * price:.2f} {quote_token}")
+                limit_quote = amount * price
+                limit_precision = price_precision(limit_quote) if limit_quote > 0 else 2
+                st.caption(f"At limit price: ≈ {limit_quote:,.{limit_precision}f} {quote_token}")
     else:
         st.session_state.last_order_type = order_type
 
@@ -1101,7 +1124,6 @@ def render_order_history_table():
         st.info("No orders found for the selected date range.")
         return
 
-    # Convert to DataFrame
     df = pd.DataFrame(order_history)
     if df.empty:
         st.info("No orders found for the selected date range.")
@@ -1141,7 +1163,7 @@ def render_order_history_table():
         column_config={
             "price": st.column_config.NumberColumn(
                 "Price",
-                format="$%.4f"
+                format="%.4f"
             ),
             "amount": st.column_config.NumberColumn(
                 "Amount",
@@ -1157,12 +1179,10 @@ def get_balances():
         if not st.session_state.selected_account:
             return []
 
-        # Get portfolio state for the selected account
         portfolio_state = backend_api_client.portfolio.get_state(
             account_names=[st.session_state.selected_account]
         )
 
-        # Extract balances
         balances = []
         if st.session_state.selected_account in portfolio_state:
             for exchange, tokens in portfolio_state[st.session_state.selected_account].items():
@@ -1189,7 +1209,6 @@ def render_balances_table():
         st.info("No balances found.")
         return
 
-    # Convert to DataFrame
     df = pd.DataFrame(balances)
     if df.empty:
         st.info("No balances found.")
@@ -1197,9 +1216,10 @@ def render_balances_table():
 
     st.subheader(f"💰 Account Balances - {st.session_state.selected_account}")
 
-    # Calculate total value
+    df = convert_price_columns(df, ["price", "value"], USDT_INR_RATE)
+
     total_value = df['value'].sum()
-    st.metric("Total Portfolio Value", f"${total_value:,.2f}")
+    st.metric("Total Portfolio Value", f"{CURRENCY}{total_value:,.2f}")
 
     st.dataframe(
         df,
@@ -1216,11 +1236,11 @@ def render_balances_table():
             ),
             "price": st.column_config.NumberColumn(
                 "Price",
-                format="$%.4f"
+                format=f"{CURRENCY}%.4f"
             ),
             "value": st.column_config.NumberColumn(
-                "Value (USD)",
-                format="$%.2f"
+                f"Value ({CURRENCY})",
+                format=f"{CURRENCY}%.2f"
             )
         }
     )
