@@ -2,13 +2,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from frontend.st_utils import get_backend_api_client, get_currency_symbol, initialize_st_page
+from frontend.st_utils import get_backend_api_client, initialize_st_page, resolve_currency_and_rate
 
 initialize_st_page(title="Portfolio", icon="💰")
 
 # Page content
 client = get_backend_api_client()
-CURRENCY = get_currency_symbol()
 NUM_COLUMNS = 4
 
 
@@ -166,6 +165,10 @@ selected_accounts, selected_exchanges, selected_tokens = get_portfolio_filters()
 if not selected_accounts:
     st.stop()
 
+# Resolve display currency and USDT conversion rate using the first available exchange
+_first_exchange = selected_exchanges[0] if selected_exchanges else None
+CURRENCY, USDT_RATE = resolve_currency_and_rate(_first_exchange)
+
 
 @st.fragment
 def portfolio_overview():
@@ -196,8 +199,10 @@ def portfolio_overview():
         st.warning("No data available for selected filters.")
         return
     
-    # Convert to DataFrame
+    # Convert to DataFrame and apply currency conversion
     portfolio_df = portfolio_state_to_df(filtered_portfolio_state)
+    portfolio_df["price"] = portfolio_df["price"] * USDT_RATE
+    portfolio_df["value"] = portfolio_df["value"] * USDT_RATE
     total_balance_usd = round(portfolio_df["value"].sum(), 2)
     
     # Display metrics
@@ -311,11 +316,15 @@ def portfolio_history():
     
     # Aggregate timestamps to solve the "electrocardiogram" issue
     history_df = aggregate_portfolio_history(history_df, time_window_seconds=time_window)
-    
+
     if len(history_df) == 0:
         st.warning("No historical data available for selected filters.")
         return
-    
+
+    # Apply currency conversion
+    history_df["price"] = history_df["price"] * USDT_RATE
+    history_df["value"] = history_df["value"] * USDT_RATE
+
     # Portfolio evolution by account (area chart)
     st.subheader("Portfolio Evolution by Account")
     account_evolution_df = history_df.groupby(['timestamp', 'account'])['value'].sum().reset_index()

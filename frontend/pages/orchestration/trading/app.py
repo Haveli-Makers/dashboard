@@ -8,7 +8,15 @@ import streamlit as st
 
 from frontend.candles import is_valid_pair, market_data_error
 from frontend.components.price_chart import show_price_chart_dialog
-from frontend.st_utils import get_backend_api_client, get_currency_symbol, get_server_cache_key, initialize_st_page
+from frontend.st_utils import (
+    INR_QUOTES,
+    USD_QUOTES,
+    _fetch_fx_rate,
+    get_backend_api_client,
+    get_server_cache_key,
+    initialize_st_page,
+    resolve_currency_and_rate,
+)
 from frontend.utils import price_precision
 
 # Enable nested async
@@ -80,7 +88,7 @@ def _fetch_funding_info(server, connector, trading_pair):
 
 
 def clear_market_data_cache():
-    for cached_fetch in (_fetch_order_book, _fetch_prices, _fetch_quote_volume, _fetch_funding_info):
+    for cached_fetch in (_fetch_order_book, _fetch_prices, _fetch_quote_volume, _fetch_funding_info, _fetch_fx_rate):
         cached_fetch.clear()
 
 
@@ -156,62 +164,16 @@ def get_quote_volume(connector, trading_pair, price, is_buy):
     return 0 if math.isnan(volume) else volume
 
 
-# Quote assets priced in US dollars; converted to INR when the server displays in ₹
-USD_QUOTES = {"USDT", "USD", "USDC"}
-FX_PAIR = "USDT-INR"
-
-
-@st.cache_data(ttl=REFRESH_INTERVAL, show_spinner=False)
-def _fetch_usdt_inr_rate(server, connector_name):
-    """Fetch the USDT-INR price from the exchange."""
-    try:
-        book = backend_api_client.market_data.get_order_book(
-            connector_name=connector_name,
-            trading_pair=FX_PAIR,
-            depth=1
-        )
-        if isinstance(book, dict) and "data" in book:
-            book = book.get("data", {})
-        bids, asks = book.get("bids") or [], book.get("asks") or []
-        best_bid = float(bids[0]["price"]) if bids else 0
-        best_ask = float(asks[0]["price"]) if asks else 0
-        if best_bid > 0 and best_ask > 0:
-            return (best_bid + best_ask) / 2
-        if best_bid > 0 or best_ask > 0:
-            return best_bid or best_ask
-    except Exception:
-        pass
-
-    prices = get_price_map(connector_name, FX_PAIR, quiet=True)
-    price = prices.get(FX_PAIR)
-    return float(price) if price and float(price) > 0 else None
-
-
-def resolve_currency_and_rate(connector_name):
-    """Resolve the display currency and USDT→display-currency rate.
-
-    Returns (currency_symbol, rate) without mutating any global state.
-    """
-    currency = get_currency_symbol()
-    if currency != "₹":
-        return currency, 1.0
-    rate = None
-    if connector_name:
-        try:
-            rate = _fetch_usdt_inr_rate(get_server_cache_key(), connector_name)
-        except Exception:
-            rate = None
-    if not rate:
-        st.warning(f"Could not fetch {FX_PAIR} price; showing USD-quoted values in $.")
-        return "$", 1.0
-    return currency, rate
-
-
 def quote_rate(trading_pair, usdt_inr_rate):
     if not trading_pair or "-" not in str(trading_pair):
         return usdt_inr_rate
-    quote = str(trading_pair).split("-")[-1].upper()
-    return usdt_inr_rate if quote in USD_QUOTES else 1.0
+    _, quote = split_trading_pair(str(trading_pair))
+    quote_base = quote.split("-")[0].upper() if "-" in quote else quote.upper()
+    if quote_base in INR_QUOTES:
+        return 1.0
+    if quote_base in USD_QUOTES:
+        return usdt_inr_rate
+    return 1.0
 
 
 def convert_price_columns(df, columns, usdt_inr_rate):
@@ -224,26 +186,6 @@ def convert_price_columns(df, columns, usdt_inr_rate):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce") * rates
     return df
-
-
-def convert_records(records, keys, rate):
-    if rate == 1.0 or not records:
-        return records
-    converted = []
-    for record in records:
-        if isinstance(record, dict):
-            updates = {}
-            for k in keys:
-                val = record.get(k)
-                if val is None:
-                    continue
-                try:
-                    updates[k] = float(val) * rate
-                except (TypeError, ValueError):
-                    pass
-            record = {**record, **updates}
-        converted.append(record)
-    return converted
 
 
 def get_accounts_and_credentials():
@@ -557,7 +499,7 @@ def render_orders_table(orders_data):
 
     st.subheader("📋 Active Orders")
 
-    df_with_cancel = convert_price_columns(df.copy(), ["price"], USDT_INR_RATE)
+    df_with_cancel = df.copy()
     df_with_cancel["cancel"] = False
 
     column_config = {
@@ -568,7 +510,7 @@ def render_orders_table(orders_data):
         ),
         "price": st.column_config.NumberColumn(
             "Price",
-            format=f"{CURRENCY}%.4f"
+            format="%.4f"
         ),
         "amount": st.column_config.NumberColumn(
             "Amount",
@@ -707,6 +649,7 @@ MARKET_RUN_EVERY = REFRESH_INTERVAL if st.session_state.auto_refresh_enabled els
 
 
 def render_market_header(connector, trading_pair):
+    CURRENCY, USDT_INR_RATE = resolve_currency_and_rate(connector)
     order_book = get_order_book(connector, trading_pair, depth=ORDER_BOOK_ROWS)
 
     bid_price = 0
@@ -723,16 +666,19 @@ def render_market_header(connector, trading_pair):
     bid_col, ask_col, spread_col, depth_pct_col, buy_depth_col, sell_depth_col = header_cols[:6]
 
     with bid_col:
-        st.metric("📈 Bid Price", f"{CURRENCY}{bid_price * display_rate:,.{precision}f}" if bid_price else "N/A")
+        full_bid = f"{CURRENCY}{bid_price * display_rate:,.{precision}f}" if bid_price else "N/A"
+        st.metric("📈 Bid Price", full_bid, help=full_bid)
 
     with ask_col:
-        st.metric("📉 Ask Price", f"{CURRENCY}{ask_price * display_rate:,.{precision}f}" if ask_price else "N/A")
+        full_ask = f"{CURRENCY}{ask_price * display_rate:,.{precision}f}" if ask_price else "N/A"
+        st.metric("📉 Ask Price", full_ask, help=full_ask)
 
     with spread_col:
         if bid_price > 0 and ask_price > 0:
             spread = ask_price - bid_price
             spread_pct = (spread / bid_price) * 100
-            st.metric("↔️ Spread", f"{CURRENCY}{spread * display_rate:,.{precision}f}", delta=f"{spread_pct:.4f}%")
+            full_spread = f"{CURRENCY}{spread * display_rate:,.{precision}f}"
+            st.metric("↔️ Spread", full_spread, delta=f"{spread_pct:.4f}%", help=full_spread)
         else:
             st.metric("↔️ Spread", "N/A")
 
@@ -753,14 +699,12 @@ def render_market_header(connector, trading_pair):
             sell_price_depth = ask_price * (1 + depth_factor)
             try:
                 buy_vol = get_quote_volume(connector, trading_pair, sell_price_depth, is_buy=True)
-                st.metric(
-                    f"📊 Buy Depth ({CURRENCY})",
-                    f"{CURRENCY}{buy_vol * display_rate:,.0f}" if buy_vol != 0 else "N/A",
-                    help="Volume available when buying (hitting asks)"
-                )
+                full_buy = f"{CURRENCY}{buy_vol * display_rate:,.0f}" if buy_vol != 0 else "N/A"
+                st.metric(f"📊 Buy Depth ({CURRENCY})", full_buy, help=full_buy)
             except Exception:
                 total_ask_volume = sum(float(ask["amount"]) * float(ask["price"]) for ask in order_book["asks"]) * display_rate
-                st.metric(f"📊 Buy Depth ({CURRENCY})", f"{CURRENCY}{total_ask_volume:,.0f}", help="Total ask volume (for buying)")
+                full_buy = f"{CURRENCY}{total_ask_volume:,.0f}"
+                st.metric(f"📊 Buy Depth ({CURRENCY})", full_buy, help=full_buy)
         else:
             st.metric(f"📊 Buy Depth ({CURRENCY})", "N/A")
 
@@ -770,14 +714,12 @@ def render_market_header(connector, trading_pair):
             buy_price_depth = bid_price * (1 - depth_factor)
             try:
                 sell_vol = get_quote_volume(connector, trading_pair, buy_price_depth, is_buy=False)
-                st.metric(
-                    f"📊 Sell Depth ({CURRENCY})",
-                    f"{CURRENCY}{sell_vol * display_rate:,.0f}" if sell_vol != 0 else "N/A",
-                    help="Volume available when selling (hitting bids)"
-                )
+                full_sell = f"{CURRENCY}{sell_vol * display_rate:,.0f}" if sell_vol != 0 else "N/A"
+                st.metric(f"📊 Sell Depth ({CURRENCY})", full_sell, help=full_sell)
             except Exception:
                 total_bid_volume = sum(float(bid["amount"]) * float(bid["price"]) for bid in order_book["bids"]) * display_rate
-                st.metric(f"📊 Sell Depth ({CURRENCY})", f"{CURRENCY}{total_bid_volume:,.0f}", help="Total bid volume (for selling)")
+                full_sell = f"{CURRENCY}{total_bid_volume:,.0f}"
+                st.metric(f"📊 Sell Depth ({CURRENCY})", full_sell, help=full_sell)
         else:
             st.metric(f"📊 Sell Depth ({CURRENCY})", "N/A")
 
@@ -1004,7 +946,8 @@ def render_trade_panel(connector, trading_pair, current_price):
             st.caption(f"≈ {base_equivalent:.6f} {base_token}")
         else:
             quote_equivalent = amount * current_price
-            st.caption(f"≈ {quote_equivalent:.2f} {quote_token}")
+            precision = price_precision(quote_equivalent) if quote_equivalent > 0 else 2
+            st.caption(f"≈ {quote_equivalent:,.{precision}f} {quote_token}")
 
     # Price input for limit orders
     price = None
@@ -1021,7 +964,7 @@ def render_trade_panel(connector, trading_pair, current_price):
 
         precision = price_precision(current_price or st.session_state.trade_price)
         price = st.number_input(
-            "Price",
+            f"Price ({quote_token})",
             min_value=0.0,
             step=10 ** -precision,
             format=f"%.{precision}f",
@@ -1031,13 +974,16 @@ def render_trade_panel(connector, trading_pair, current_price):
 
         display_rate = quote_rate(trading_pair, USDT_INR_RATE)
         if price > 0 and display_rate != 1.0:
-            st.caption(f"≈ {CURRENCY}{price * display_rate:,.2f}")
+            display_precision = price_precision(price * display_rate)
+            st.caption(f"≈ {CURRENCY}{price * display_rate:,.{display_precision}f}")
 
         if price > 0 and amount > 0:
             if is_quote:
                 st.caption(f"At limit price: ≈ {amount / price:.6f} {base_token}")
             else:
-                st.caption(f"At limit price: ≈ {amount * price:.2f} {quote_token}")
+                limit_quote = amount * price
+                limit_precision = price_precision(limit_quote) if limit_quote > 0 else 2
+                st.caption(f"At limit price: ≈ {limit_quote:,.{limit_precision}f} {quote_token}")
     else:
         st.session_state.last_order_type = order_type
 
@@ -1217,7 +1163,7 @@ def render_order_history_table():
         column_config={
             "price": st.column_config.NumberColumn(
                 "Price",
-                format=f"{CURRENCY}%.4f"
+                format="%.4f"
             ),
             "amount": st.column_config.NumberColumn(
                 "Amount",

@@ -131,7 +131,7 @@ def display_side_analysis(data_source: PerformanceDataSource,
         st.write(f"### {side_str} Positions")
         col1, col2, col3 = st.columns(3)
         col1.metric(label="Net PnL (Quote)", value=f"{results['net_pnl_quote']:.2f}")
-        col2.metric(label=f"Max Drawdown ({CURRENCY})", value=f"{results['max_drawdown_usd']:.2f}")
+        col2.metric(label="Max Drawdown (Quote)", value=f"{results['max_drawdown_usd']:.2f}")
         col3.metric(label="Total Volume (Quote)", value=f"{results['total_volume']:.2f}")
         col1.metric(label="Sharpe Ratio", value=f"{results['sharpe_ratio']:.2f}")
         col2.metric(label="Profit Factor", value=f"{results['profit_factor']:.2f}")
