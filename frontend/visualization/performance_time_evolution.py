@@ -3,10 +3,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from frontend.st_utils import get_currency_symbol
 from frontend.visualization.theme import get_color_scheme
 
 
 def create_combined_subplots(executors: pd.DataFrame):
+    CURRENCY = get_currency_symbol()
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.1,
                         subplot_titles=["Cumulative PnL",
                                         "Cumulative Volume",
@@ -41,8 +43,8 @@ def create_combined_subplots(executors: pd.DataFrame):
                       paper_bgcolor='rgba(0,0,0,0)',
                       font=dict(color='white'))
 
-    fig.update_yaxes(title_text="$ Quote", row=1, col=1)
-    fig.update_yaxes(title_text="$ Quote", row=2, col=1)
+    fig.update_yaxes(title_text=f"{CURRENCY} Quote", row=1, col=1)
+    fig.update_yaxes(title_text=f"{CURRENCY} Quote", row=2, col=1)
     fig.update_yaxes(title_text="# Executors", row=3, col=1)
 
     return fig

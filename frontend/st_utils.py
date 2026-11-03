@@ -89,9 +89,28 @@ def load_servers() -> list[dict]:
             'username': BACKEND_API_USERNAME,
             'password': BACKEND_API_PASSWORD,
         }]
-    with open(servers_path) as f:
+    with open(servers_path, encoding='utf-8') as f:
         data = yaml.load(f, Loader=SafeLoader)
     return data.get('servers', [])
+
+
+SERVER_QUERY_PARAM = "server"
+
+
+def _init_selected_server_name(server_names: list[str]) -> None:
+    """Restore the selected server from the URL (survives page refresh), else default to the first one."""
+    if 'selected_server_name' in st.session_state or not server_names:
+        return
+    requested = st.query_params.get(SERVER_QUERY_PARAM)
+    st.session_state.selected_server_name = requested if requested in server_names else server_names[0]
+
+
+def sync_server_query_param() -> None:
+    """Keep the selected server in the URL so a refresh reloads the same server.
+    Must run after st.navigation(), since switching pages clears query params."""
+    selected_name = st.session_state.get('selected_server_name')
+    if selected_name and st.query_params.get(SERVER_QUERY_PARAM) != selected_name:
+        st.query_params[SERVER_QUERY_PARAM] = selected_name
 
 
 def render_server_selector():
@@ -100,8 +119,7 @@ def render_server_selector():
     if not servers:
         return
     server_names = [s['name'] for s in servers]
-    if 'selected_server_name' not in st.session_state:
-        st.session_state.selected_server_name = server_names[0]
+    _init_selected_server_name(server_names)
 
     def _on_server_change():
         st.session_state.selected_server_name = st.session_state._server_selector
@@ -120,6 +138,8 @@ def render_server_selector():
 def _get_selected_server() -> dict:
     """Return the server config dict for the currently selected server."""
     servers = load_servers()
+    if servers:
+        _init_selected_server_name([s['name'] for s in servers])
     selected_name = st.session_state.get('selected_server_name')
     for s in servers:
         if s['name'] == selected_name:
@@ -132,11 +152,93 @@ def get_selected_server_config() -> dict:
     return _get_selected_server()
 
 
+_CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$"}
+
+
+def get_currency_symbol() -> str:
+    """Currency symbol for the active server (set via `currency` in servers.yml, defaults to $)."""
+    code = (_get_selected_server().get('currency') or 'USD').upper()
+    return _CURRENCY_SYMBOLS.get(code, '$')
+
+
 def get_server_cache_key() -> str:
     """Hashable id of the active server. st.cache_data is shared across sessions, so cached
     backend data must be keyed by it."""
     server = _get_selected_server()
     return f"{server.get('name')}@{server.get('host')}:{server.get('port')}"
+
+
+USD_QUOTES = {"USDT", "USD", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "USDE"}
+INR_QUOTES = {"INR"}
+_DEFAULT_FX_PAIR = "USDT-INR"
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _fetch_fx_rate(server_key: str, connector_name: str, fx_pair: str):
+    """Fetch an FX mid-price from the exchange order book, falling back to the ticker."""
+    client = get_backend_api_client()
+    try:
+        book = client.market_data.get_order_book(
+            connector_name=connector_name,
+            trading_pair=fx_pair,
+            depth=1,
+        )
+        if isinstance(book, dict) and "data" in book:
+            book = book.get("data", {})
+        bids, asks = book.get("bids") or [], book.get("asks") or []
+        best_bid = float(bids[0]["price"]) if bids else 0
+        best_ask = float(asks[0]["price"]) if asks else 0
+        if best_bid > 0 and best_ask > 0:
+            return (best_bid + best_ask) / 2
+        if best_bid > 0 or best_ask > 0:
+            return best_bid or best_ask
+    except Exception:
+        pass
+
+    try:
+        price_response = client.market_data.get_prices(
+            connector_name=connector_name,
+            trading_pairs=[fx_pair],
+        )
+        if isinstance(price_response, dict):
+            data = (
+                price_response.get("data", {})
+                if price_response.get("status") == "success"
+                else price_response
+            )
+        else:
+            data = {}
+        price = data.get(fx_pair)
+        if price and float(price) > 0:
+            return float(price)
+    except Exception:
+        pass
+
+    return None
+
+
+def resolve_currency_and_rate(connector_name: Optional[str] = None):
+    """Resolve the display currency and quote -> display-currency rate."""
+    server = _get_selected_server()
+    currency_code = (server.get('currency') or 'USD').upper()
+
+    if currency_code != 'INR':
+        return '$', 1.0
+
+    fx_pair = _DEFAULT_FX_PAIR
+
+    rate = None
+    if connector_name:
+        try:
+            rate = _fetch_fx_rate(get_server_cache_key(), connector_name, fx_pair)
+        except Exception:
+            rate = None
+
+    if not rate:
+        if connector_name:
+            st.warning(f"Could not fetch {fx_pair} rate from {connector_name}; USD-quoted values are not converted.")
+        return '$', 1.0
+    return '₹', rate
 
 
 def start_google_login():

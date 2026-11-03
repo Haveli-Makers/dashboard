@@ -18,7 +18,7 @@ from frontend.candles import (
 from frontend.st_utils import get_server_cache_key
 from frontend.utils import price_precision
 
-LIGHTWEIGHT_CHARTS_JS = "https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"
+LIGHTWEIGHT_CHARTS_JS = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"
 
 CANDLE_COUNT_OPTIONS = [100, 300, 500, 1000]
 CHART_HEIGHT = 520

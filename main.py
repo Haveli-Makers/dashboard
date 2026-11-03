@@ -1,7 +1,7 @@
 import streamlit as st
 
 from CONFIG import AUTH_SYSTEM_ENABLED
-from frontend.st_utils import auth_system
+from frontend.st_utils import auth_system, sync_server_query_param
 
 def render_single_page_nav(nav_slot, pages):
     section, section_pages = next(iter(pages.items()))
@@ -19,6 +19,7 @@ def main():
     can_see_nav = not AUTH_SYSTEM_ENABLED or st.session_state.get("authentication_status", False)
 
     pg = st.navigation(pages, position="sidebar" if can_see_nav else "hidden")
+    sync_server_query_param()
 
     if can_see_nav and sum(len(p) for p in pages.values()) == 1:
         render_single_page_nav(nav_slot, pages)
