@@ -167,6 +167,34 @@ class BotOrchestrationRouter(BaseRouter):
         return await self._post(url, params=params)
 
     # Bot Deployment Operations
+    async def deploy_script(
+            self,
+            instance_name: str,
+            credentials_profile: str,
+            script: Optional[str] = None,
+            script_config: Optional[str] = None,
+            image: str = "hummingbot/hummingbot:latest",
+            headless: bool = False,
+            connectors: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Creates and autostarts a script-based Hummingbot instance.
+        """
+        script_deployment = {
+            "instance_name": instance_name,
+            "credentials_profile": credentials_profile,
+            "image": image,
+            "headless": headless
+        }
+        if script is not None:
+            script_deployment["script"] = script
+        if script_config is not None:
+            script_deployment["script_config"] = script_config
+        if connectors:
+            script_deployment["connectors"] = connectors
+
+        return await self._post("/bot-orchestration/deploy-script", json=script_deployment)
+
     async def deploy_v2_script(
             self,
             instance_name: str,

@@ -75,3 +75,19 @@ class ScriptsRouter(BaseRouter):
     async def delete_script_config(self, config_name: str) -> Dict[str, Any]:
         """Delete script configuration."""
         return await self._delete(f"/scripts/configs/{config_name}")
+
+    async def list_community_scripts(self) -> List[str]:
+        """List scripts available in the configured community scripts directory."""
+        return await self._get("/scripts/community/")
+
+    async def get_community_script(self, script_name: str) -> Dict[str, str]:
+        """Get community script content by name."""
+        return await self._get(f"/scripts/community/{script_name}")
+
+    async def import_community_script(self, script_name: str, override: bool = True) -> Dict[str, Any]:
+        """Import a community script into the API server's local scripts directory."""
+        return await self._post(f"/scripts/community/{script_name}/import", json={"override": override})
+
+    async def get_community_scripts(self) -> List[str]:
+        """Backward-compatible alias for list_community_scripts."""
+        return await self.list_community_scripts()
