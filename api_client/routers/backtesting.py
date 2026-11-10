@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from .base import BaseRouter
 
@@ -14,7 +14,7 @@ class BacktestingRouter(BaseRouter):
         trade_cost: float = 0.0006,
         config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Run a backtesting simulation with the provided configuration."""
+        """Run a candle-based backtesting simulation."""
         payload = {
             "start_time": start_time,
             "end_time": end_time,
@@ -24,13 +24,8 @@ class BacktestingRouter(BaseRouter):
         }
         return await self._post("/backtesting/run-backtesting", json=payload)
 
-    async def list_orderbook_strategies(self) -> List[Dict[str, str]]:
-        """List available orderbook backtesting strategies."""
-        return await self._get("/backtesting/orderbook-strategies")
-
-    async def run_orderbook_backtest(
+    async def run_controller_orderbook_backtest(
         self,
-        strategy: str,
         connector: str,
         pair: str,
         start: str,
@@ -39,12 +34,10 @@ class BacktestingRouter(BaseRouter):
         taker_fee: float = 0.001,
         latency_ms: float = 100,
         fill_at_touch: bool = False,
-        strategy_args: Optional[Dict[str, Any]] = None,
-        config_path: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Run an orderbook-based backtest on recorded market data."""
+        """Run any strategy_v2 controller against recorded orderbook + trade data."""
         payload = {
-            "strategy": strategy,
             "connector": connector,
             "pair": pair,
             "start": start,
@@ -52,11 +45,8 @@ class BacktestingRouter(BaseRouter):
             "taker_fee": taker_fee,
             "latency_ms": latency_ms,
             "fill_at_touch": fill_at_touch,
+            "config": config or {},
         }
         if end is not None:
             payload["end"] = end
-        if strategy_args is not None:
-            payload["strategy_args"] = strategy_args
-        if config_path is not None:
-            payload["config_path"] = config_path
-        return await self._post("/backtesting/run-orderbook-backtest", json=payload)
+        return await self._post("/backtesting/run-controller-orderbook-backtest", json=payload)
