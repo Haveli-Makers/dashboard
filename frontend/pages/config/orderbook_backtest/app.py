@@ -188,103 +188,75 @@ _UNSUPPORTED_CONTROLLERS = {
 # ── Controller selection ──────────────────────────────────────────────
 st.write("### Controller Config")
 
-config_mode = st.radio(
-    "Config Source",
-    ["Select Controller", "Upload YAML", "Paste JSON/Dict"],
-    horizontal=True,
+try:
+    all_controllers = backend_api_client.controllers.list_controllers()
+except Exception as e:
+    st.error(f"Failed to fetch controllers: {e}")
+    st.stop()
+
+controller_options = []
+unavailable = []
+for ctype, names in sorted(all_controllers.items()):
+    for name in sorted(names):
+        if (ctype, name) in _UNSUPPORTED_CONTROLLERS:
+            unavailable.append(f"`{name}` ({_UNSUPPORTED_CONTROLLERS[(ctype, name)]})")
+        else:
+            controller_options.append((ctype, name))
+
+if not controller_options:
+    st.warning("No controllers found on the backend.")
+    st.stop()
+
+
+display_labels = [f"{ctype} / {name}" for ctype, name in controller_options]
+selected_idx = st.selectbox(
+    "Controller",
+    range(len(display_labels)),
+    format_func=lambda i: display_labels[i],
+    help="Select a strategy_v2 controller to backtest",
 )
+selected_type, selected_name = controller_options[selected_idx]
 
-controller_config = None
-
-if config_mode == "Select Controller":
-    try:
-        all_controllers = backend_api_client.controllers.list_controllers()
-    except Exception as e:
-        st.error(f"Failed to fetch controllers: {e}")
-        st.stop()
-
-    controller_options = []
-    unavailable = []
-    for ctype, names in sorted(all_controllers.items()):
-        for name in sorted(names):
-            if (ctype, name) in _UNSUPPORTED_CONTROLLERS:
-                unavailable.append(f"`{name}` ({_UNSUPPORTED_CONTROLLERS[(ctype, name)]})")
-            else:
-                controller_options.append((ctype, name))
-
-    if not controller_options:
-        st.warning("No controllers found on the backend.")
-        st.stop()
-
-    if unavailable:
-        st.caption("Not listed, because a replay serves one market: " + ", ".join(unavailable) + ".")
-
-    display_labels = [f"{ctype} / {name}" for ctype, name in controller_options]
-    selected_idx = st.selectbox(
-        "Controller",
-        range(len(display_labels)),
-        format_func=lambda i: display_labels[i],
-        help="Select a strategy_v2 controller to backtest",
+# Fetch config template
+try:
+    template = backend_api_client.controllers.get_controller_config_template(
+        selected_type, selected_name
     )
-    selected_type, selected_name = controller_options[selected_idx]
+except Exception as e:
+    st.error(f"Failed to fetch config template: {e}")
+    st.stop()
 
-    # Fetch config template
-    try:
-        template = backend_api_client.controllers.get_controller_config_template(
-            selected_type, selected_name
-        )
-    except Exception as e:
-        st.error(f"Failed to fetch config template: {e}")
-        st.stop()
+# Render auto-generated form from template fields
+form_values = {}
+visible_fields = {
+    k: v for k, v in template.items() if k not in _HIDDEN_FIELDS
+}
 
-    # Render auto-generated form from template fields
-    form_values = {}
-    visible_fields = {
-        k: v for k, v in template.items() if k not in _HIDDEN_FIELDS
-    }
+with st.expander("Strategy Parameters", expanded=True):
+    # Group sizing at top
+    top_fields = ["leverage", "total_amount_quote"]
+    top_visible = [f for f in top_fields if f in visible_fields]
+    if top_visible:
+        cols = st.columns(len(top_visible))
+        for col, fname in zip(cols, top_visible):
+            with col:
+                form_values[fname] = _render_field(fname, visible_fields[fname])
 
-    with st.expander("Strategy Parameters", expanded=True):
-        # Group sizing at top
-        top_fields = ["leverage", "total_amount_quote"]
-        top_visible = [f for f in top_fields if f in visible_fields]
-        if top_visible:
-            cols = st.columns(len(top_visible))
-            for col, fname in zip(cols, top_visible):
+    remaining = [f for f in visible_fields if f not in top_fields]
+    if remaining:
+        for row_start in range(0, len(remaining), 3):
+            row_fields = remaining[row_start:row_start + 3]
+            cols = st.columns(3)
+            for col, fname in zip(cols, row_fields):
                 with col:
                     form_values[fname] = _render_field(fname, visible_fields[fname])
 
-        remaining = [f for f in visible_fields if f not in top_fields]
-        if remaining:
-            for row_start in range(0, len(remaining), 3):
-                row_fields = remaining[row_start:row_start + 3]
-                cols = st.columns(3)
-                for col, fname in zip(cols, row_fields):
-                    with col:
-                        form_values[fname] = _render_field(fname, visible_fields[fname])
-
-    controller_config = {
-        "controller_name": selected_name,
-        "controller_type": selected_type,
-        "candles_config": [],
-    }
-    controller_config.update({k: v for k, v in form_values.items() if v is not _USE_DEFAULT})
-
-elif config_mode == "Upload YAML":
-    uploaded = st.file_uploader("Controller YAML config", type=["yml", "yaml"])
-    if uploaded is not None:
-        controller_config = uploaded.getvalue().decode("utf-8")
-
-else:  
-    config_text = st.text_area(
-        "Controller config (JSON dict)",
-        height=200,
-        placeholder='{"controller_type": "generic", "controller_name": "simple_grid", "connector_name": "coindcx", ...}',
-    )
-    if config_text.strip():
-        try:
-            controller_config = json.loads(config_text)
-        except json.JSONDecodeError:
-            st.error("Invalid JSON. Please enter a valid controller config dict.")
+controller_config = {
+    "controller_name": selected_name,
+    "controller_type": selected_type,
+    "candles_config": [],
+}
+controller_config.update({k: v for k, v in form_values.items() if v is not _USE_DEFAULT})
 
 # ── Market data ────────────────────────────────────────────────────────
 st.write("### Market Data")
@@ -326,14 +298,12 @@ with fc4:
                                 help="Optimistic: fill resting orders when a trade prints AT the price")
 
 # ── Run ────────────────────────────────────────────────────────────────
-run_disabled = controller_config is None
-if st.button("Run Backtest", type="primary", disabled=run_disabled):
+if st.button("Run Backtest", type="primary"):
     start_str = start_date.isoformat()
     end_str = end_date.isoformat() if end_date != start_date else None
 
-    if config_mode == "Select Controller":
-        controller_config["connector_name"] = connector
-        controller_config["trading_pair"] = pair
+    controller_config["connector_name"] = connector
+    controller_config["trading_pair"] = pair
 
     with st.spinner("Running controller orderbook backtest..."):
         try:
