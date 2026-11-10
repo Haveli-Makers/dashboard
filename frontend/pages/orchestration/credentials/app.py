@@ -35,7 +35,7 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
     parameters = credential_details.get("parameters") or {}
     parameter_items = list(parameters.items())
 
-    columns_spec = [2, *([3] * max(len(parameter_items), 1)), 2, 1]
+    columns_spec = [2, 2, *([3] * max(len(parameter_items), 1)), 1]
 
     row_key = f"{account_name}_{connector_name}_{alias or 'master'}"
 
@@ -50,8 +50,17 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
                 key=f"{row_key}_connector",
             )
 
+        with cols[1]:
+            type_display = alias if alias else credential_type
+            st.text_input(
+                "Account Type",
+                value=type_display,
+                disabled=True,
+                key=f"{row_key}_type",
+            )
+
         if parameter_items:
-            for index, (parameter_name, parameter_value) in enumerate(parameter_items, start=1):
+            for index, (parameter_name, parameter_value) in enumerate(parameter_items, start=2):
                 with cols[index]:
                     st.text_input(
                         parameter_name.replace("_", " ").title(),
@@ -60,22 +69,13 @@ def render_credential_row(account_name: str, credential_details: dict[str, Any])
                         key=f"{row_key}_{parameter_name}",
                     )
         else:
-            with cols[1]:
+            with cols[2]:
                 st.text_input(
                     "Parameters",
                     value="No parameters",
                     disabled=True,
                     key=f"{row_key}_parameters",
                 )
-
-        with cols[-2]:
-            type_display = alias if alias else credential_type
-            st.text_input(
-                "Account Type",
-                value=type_display,
-                disabled=True,
-                key=f"{row_key}_type",
-            )
 
         with cols[-1]:
             st.write("")
