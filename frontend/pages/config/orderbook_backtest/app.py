@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 
@@ -270,7 +270,8 @@ with mc3:
         "Backtest Duration",
         options=list(DURATION_PRESETS.keys()),
         index=2,
-        help="How far back from now to backtest",
+        help="Exactly this long, ending when you press Run Backtest. "
+             "Custom replays whole UTC days.",
     )
 
 preset_delta = DURATION_PRESETS[duration_label]
@@ -281,8 +282,10 @@ if preset_delta is None:
     with dd2:
         end_date = st.date_input("End Date", help="Inclusive.")
 else:
-    end_date = datetime.utcnow().date()
-    start_date = (datetime.utcnow() - preset_delta).date()
+    _preview_end = datetime.now(timezone.utc)
+    _preview_start = _preview_end - preset_delta
+    st.caption(f"Replays {_preview_start:%Y-%m-%d %H:%M} → {_preview_end:%Y-%m-%d %H:%M} UTC "
+               f"(the window is fixed when you press Run Backtest). Gaps in the recording shorten it.")
 
 # ── Engine settings ────────────────────────────────────────────────────
 st.write("### Engine Settings")
@@ -299,6 +302,12 @@ with fc4:
 
 # ── Run ────────────────────────────────────────────────────────────────
 if st.button("Run Backtest", type="primary"):
+    start_ts = end_ts = None
+    if preset_delta is not None:
+        window_end = datetime.now(timezone.utc)
+        window_start = window_end - preset_delta
+        start_date, end_date = window_start.date(), window_end.date()
+        start_ts, end_ts = window_start.timestamp(), window_end.timestamp()
     start_str = start_date.isoformat()
     end_str = end_date.isoformat() if end_date != start_date else None
 
@@ -312,6 +321,8 @@ if st.button("Run Backtest", type="primary"):
                 pair=pair,
                 start=start_str,
                 end=end_str,
+                start_ts=start_ts,
+                end_ts=end_ts,
                 maker_fee=maker_fee / 100,
                 taker_fee=taker_fee / 100,
                 latency_ms=latency_ms,
@@ -338,20 +349,40 @@ if st.button("Run Backtest", type="primary"):
         return format(value, spec)
 
     rm1, rm2, rm3, rm4 = st.columns(4)
-    rm1.metric("Net PnL (Quote)", _num("net_pnl_quote", "+,.4f"))
-    rm2.metric("Total Executors", r_results.get("total_executors", 0))
-    rm3.metric("Total Fees", f"{results.get('fees', 0):,.4f}")
+    rm1.metric("Net PnL (Quote)", _num("net_pnl_quote", "+,.4f"),
+               help="Total profit or loss in the quote asset (e.g. USDT), after fees. It is the sum of "
+                    "every executor's net PnL. A position still open at the end of the run is valued "
+                    "at the final mid price, so part of this can be unrealised.")
+    rm2.metric("Total Executors", r_results.get("total_executors", 0),
+               help=f"Every executor the controller created, including ones whose orders never filled "
+                    f"and were cancelled or refreshed. Only "
+                    f"{r_results.get('total_executors_with_position', 0)} of them actually traded; "
+                    f"accuracy and win/loss count only those.")
+    rm3.metric("Total Fees", f"{results.get('fees', 0):,.4f}",
+               help="Maker and taker fees paid on every fill, in the quote asset. Already subtracted "
+                    "from Net PnL.")
     rm4.metric("Sharpe Ratio", _num("sharpe_ratio", ".2f"),
-               help=f"Annualised from {r_results.get('sharpe_samples', 0)} one-minute buckets. "
-                    "A short window makes this arithmetically correct but statistically weak.")
+               help=f"Average PnL change per minute divided by its volatility, scaled to a year. "
+                    f"Computed from {r_results.get('sharpe_samples', 0)} one-minute buckets. Above 1 is "
+                    f"usually considered good, but over a short window or with few trades the number "
+                    f"can be huge and means very little.")
 
     rm5, rm6, rm7, rm8 = st.columns(4)
-    rm5.metric("Accuracy", _num("accuracy", ".1%"))
-    rm6.metric("Max Drawdown", _num("max_drawdown_pct", ".2%"))
+    rm5.metric("Accuracy", _num("accuracy", ".1%"),
+               help="Share of executors that traded and ended with a profit. Executors that never "
+                    "filled are left out. Break-even executors count as not winning.")
+    rm6.metric("Max Drawdown", _num("max_drawdown_pct", ".2%"),
+               help=f"The biggest drop of the PnL curve from its previous high, as a share of Total "
+                    f"Amount Quote ({r_results.get('max_drawdown_usd', 0):,.4f} in quote). Includes "
+                    f"unrealised moves on open positions. Leverage is not taken into account.")
     rm7.metric("Profit Factor", _num("profit_factor", ".2f"),
-               help="Gross wins / gross losses. 'n/a' means no losing executor, so the "
-                    "ratio is undefined rather than break-even.")
-    rm8.metric("Final Position", f"{results.get('final_position', 0):+.8g}")
+               help="Total won by winning executors divided by total lost by losing ones. Above 1 "
+                    "means wins outweighed losses. 'n/a' means no executor lost, so the ratio is "
+                    "undefined rather than break-even.")
+    rm8.metric("Final Position", f"{results.get('final_position', 0):+.8g}",
+               help="Base asset (e.g. BTC) held when the run ended: positive is long, negative is "
+                    "short, 0 is flat. A non-zero value means a position was still open, and its "
+                    "value at the final mid price is included in Net PnL.")
 
     recon = results.get("reconciliation") or {}
     if recon and not recon.get("ok", True):
@@ -396,11 +427,22 @@ if st.button("Run Backtest", type="primary"):
     close_types = r_results.get("close_types", {})
     if close_types:
         rm9, rm10, rm11, rm12 = st.columns(4)
-        rm9.metric("Long Accuracy", f"{r_results.get('accuracy_long', 0):.1%}")
-        rm10.metric("Short Accuracy", f"{r_results.get('accuracy_short', 0):.1%}")
-        rm11.metric("Win / Loss", f"{r_results.get('win_signals', 0)} / {r_results.get('loss_signals', 0)}")
+        rm9.metric("Long Accuracy", f"{r_results.get('accuracy_long', 0):.1%}",
+                   help=f"Of the {r_results.get('total_long', 0)} buy (long) executors that traded, "
+                        f"the share that ended with a profit.")
+        rm10.metric("Short Accuracy", f"{r_results.get('accuracy_short', 0):.1%}",
+                    help=f"Of the {r_results.get('total_short', 0)} sell (short) executors that "
+                         f"traded, the share that ended with a profit.")
+        rm11.metric("Win / Loss", f"{r_results.get('win_signals', 0)} / {r_results.get('loss_signals', 0)}",
+                    help="Executors that traded and ended with a profit / with a loss. Break-even "
+                         "executors are in neither count.")
         close_str = " | ".join(f"{k}: {v}" for k, v in close_types.items())
-        rm12.metric("Close Types", close_str)
+        close_lines = "  \n".join(f"- **{k}**: {v}" for k, v in close_types.items())
+        rm12.metric("Close Types", close_str,
+                    help="How executors ended. TAKE_PROFIT and STOP_LOSS: hit that barrier. "
+                         "TIME_LIMIT: open too long. EARLY_STOP: stopped by the controller, e.g. an "
+                         "unfilled order being refreshed, or still running when the backtest ended. "
+                         "Full counts (the value above can be cut off):  \n" + close_lines)
 
     # ── Equity curve ───────────────────────────────────────────────────
     equity = results.get("equity", [])

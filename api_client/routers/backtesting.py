@@ -35,8 +35,15 @@ class BacktestingRouter(BaseRouter):
         latency_ms: float = 100,
         fill_at_touch: bool = False,
         config: Optional[Dict[str, Any]] = None,
+        start_ts: Optional[float] = None,
+        end_ts: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Run any strategy_v2 controller against recorded orderbook + trade data."""
+        """
+        Run any strategy_v2 controller against recorded orderbook + trade data.
+
+        start/end are UTC dates selecting the recorded day files; start_ts/end_ts (unix seconds)
+        optionally trim the replay to an exact window inside them.
+        """
         payload = {
             "connector": connector,
             "pair": pair,
@@ -49,4 +56,8 @@ class BacktestingRouter(BaseRouter):
         }
         if end is not None:
             payload["end"] = end
+        if start_ts is not None:
+            payload["start_ts"] = start_ts
+        if end_ts is not None:
+            payload["end_ts"] = end_ts
         return await self._post("/backtesting/run-controller-orderbook-backtest", json=payload)
