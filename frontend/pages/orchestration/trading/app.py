@@ -225,24 +225,64 @@ def get_positions(account_name=None):
         return []
 
 
-def get_active_orders(account_name=None):
-    """Get active orders."""
+def get_active_orders(account_name=None, connector_name=None, trading_pairs=None):
+    """Get active orders for an account, independent of the Account & Market trading pair."""
+    def _call(**kwargs):
+        try:
+            response = backend_api_client.trading.get_active_orders(limit=200, **kwargs)
+            return _extract_data(response)
+        except Exception as e:
+            st.error(f"Failed to fetch active orders: {e}")
+            return []
+
+    base_kwargs = {}
+    if account_name:
+        base_kwargs["account_names"] = [account_name]
+    if connector_name:
+        base_kwargs["connector_names"] = [connector_name]
+
+    orders = _call(**base_kwargs)
+
+    if trading_pairs:
+        orders = orders + _call(**base_kwargs, trading_pairs=trading_pairs)
+
+    seen, unique = set(), []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        key = (
+            order.get("order_id")
+            or order.get("client_order_id")
+            or order.get("exchange_order_id")
+            or id(order)
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(order)
+    return unique
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_active_orders_capability(server, exchange_name):
+    return backend_api_client.connectors.get_active_orders_capability(exchange_name)
+
+
+def get_active_orders_capability(connector):
+    """Get the active orders capability of a connector, returning a tuple of (supports_all_open_orders_without_pair, can_fetch_exchange_open_orders)."""
+    if not connector:
+        return False, False
+    exchange_name = str(connector).split("__")[0]  
     try:
-        kwargs = {"limit": 100}
-        if account_name:
-            kwargs["account_names"] = [account_name]
-        response = backend_api_client.trading.get_active_orders(**kwargs)
-        if isinstance(response, list):
-            return response
-        elif isinstance(response, dict):
-            if response.get("status") == "success":
-                return response.get("data", [])
-            elif "data" in response:
-                return response.get("data", [])
-        return []
-    except Exception as e:
-        st.error(f"Failed to fetch active orders: {e}")
-        return []
+        cap = _fetch_active_orders_capability(get_server_cache_key(), exchange_name)
+    except Exception:
+        return False, True
+    if not isinstance(cap, dict):
+        return False, True
+    return (
+        bool(cap.get("supports_all_open_orders_without_pair")),
+        bool(cap.get("can_fetch_exchange_open_orders")),
+    )
 
 
 def _extract_data(response):
@@ -498,8 +538,6 @@ def render_orders_table(orders_data):
     if df.empty:
         st.info("No active orders found.")
         return
-
-    st.subheader("📋 Active Orders")
 
     df_with_cancel = df.copy()
     df_with_cancel["cancel"] = False
@@ -1180,9 +1218,9 @@ def show_account_data():
 
     st.divider()
 
-    # Get positions and orders
+    # Each tab draws from the selected account (and exchange), independent of the
+    # trading pair chosen in Account & Market — that pair only drives Market Data / trading.
     positions = get_positions(st.session_state.selected_account)
-    orders = get_active_orders(st.session_state.selected_account)
 
     # Display in tabs - Balances first
     tab1, tab2, tab3, tab4 = st.tabs(["💰 Balances", "📊 Positions", "📋 Active Orders", "📜 Order History"])
@@ -1192,9 +1230,69 @@ def show_account_data():
     with tab2:
         render_positions_table(positions)
     with tab3:
-        render_orders_table(orders)
+        render_active_orders_tab()
     with tab4:
         render_order_history_table()
+
+
+def render_active_orders_tab():
+    st.subheader("📋 Active Orders")
+
+    account = st.session_state.selected_account
+    connector = st.session_state.selected_connector
+    if not account:
+        st.info("Select an account to view active orders.")
+        return
+
+    supports_pairless, can_fetch_exchange = get_active_orders_capability(connector)
+
+    trading_pairs = []
+    pairs_raw = ""
+
+    if supports_pairless:
+        st.success(
+            "✅ All open orders for this exchange are fetched automatically, including orders "
+            "placed on the exchange website or app — no trading pair needed."
+        )
+    elif can_fetch_exchange:
+        st.info(
+            "🤖 Orders tracked by the bot are listed across **all** trading pairs automatically. "
+            "This exchange can't list orders placed on its website or app without a market, so to "
+            "also pull those, enter the trading pair(s) below."
+        )
+    else:
+        st.warning(
+            "🤖 Showing bot-tracked orders across all trading pairs. This exchange's API can't "
+            "list orders placed on its website or app, so those can't be shown here."
+        )
+
+    if can_fetch_exchange and not supports_pairless:
+        pair_col, btn_col = st.columns([4, 1], vertical_alignment="bottom")
+        with pair_col:
+            pairs_raw = st.text_input(
+                "Trading pair(s) for exchange-side orders",
+                placeholder="e.g. BTC-USDT, ETH-INR",
+                key="active_orders_pairs",
+                help="Comma-separated. Used only to also fetch open orders placed outside the bot. "
+                     "Leave empty to show just bot-tracked orders.",
+            )
+        with btn_col:
+            if st.button("🔄 Refresh", use_container_width=True, key="refresh_active_orders"):
+                st.rerun()
+    else:
+        if st.button("🔄 Refresh", key="refresh_active_orders"):
+            st.rerun()
+
+    if pairs_raw:
+        trading_pairs = [p.strip().upper() for p in pairs_raw.split(",") if p.strip()]
+        invalid = [p for p in trading_pairs if not is_valid_pair(p)]
+        if invalid:
+            st.warning(f"Ignoring invalid pair(s): {', '.join(invalid)}")
+        trading_pairs = [p for p in trading_pairs if is_valid_pair(p)]
+
+    with st.spinner("Fetching active orders..."):
+        orders = get_active_orders(account, connector, trading_pairs or None)
+    render_orders_table(orders)
 
 
 def _parse_mixed_timestamp(value):
