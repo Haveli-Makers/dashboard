@@ -14,6 +14,7 @@ from .routers import (
     GatewayRouter,
     GatewaySwapRouter,
     MarketDataRouter,
+    MetricsRouter,
     PortfolioRouter,
     ScriptsRouter,
     TradingRouter,
@@ -44,6 +45,7 @@ class HummingbotAPIClient:
         self._gateway_swap: Optional[GatewaySwapRouter] = None
         self._gateway_clmm: Optional[GatewayCLMMRouter] = None
         self._market_data: Optional[MarketDataRouter] = None
+        self._metrics: Optional[MetricsRouter] = None
         self._portfolio: Optional[PortfolioRouter] = None
         self._scripts: Optional[ScriptsRouter] = None
         self._trading: Optional[TradingRouter] = None
@@ -66,6 +68,7 @@ class HummingbotAPIClient:
             self._gateway_swap = GatewaySwapRouter(self._session, self.base_url)
             self._gateway_clmm = GatewayCLMMRouter(self._session, self.base_url)
             self._market_data = MarketDataRouter(self._session, self.base_url)
+            self._metrics = MetricsRouter(self._session, self.base_url)
             self._portfolio = PortfolioRouter(self._session, self.base_url)
             self._scripts = ScriptsRouter(self._session, self.base_url)
             self._trading = TradingRouter(self._session, self.base_url)
@@ -86,6 +89,7 @@ class HummingbotAPIClient:
             self._gateway_swap = None
             self._gateway_clmm = None
             self._market_data = None
+            self._metrics = None
             self._portfolio = None
             self._scripts = None
             self._trading = None
@@ -166,6 +170,13 @@ class HummingbotAPIClient:
         if self._market_data is None:
             raise RuntimeError("Client not initialized. Call await client.init() first.")
         return self._market_data
+
+    @property
+    def metrics(self) -> MetricsRouter:
+        """Access the bot monitoring router."""
+        if self._metrics is None:
+            raise RuntimeError("Client not initialized. Call await client.init() first.")
+        return self._metrics
 
     @property
     def portfolio(self) -> PortfolioRouter:

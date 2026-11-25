@@ -76,6 +76,12 @@ def private_pages():
                 url_path="instances"
             ),
             st.Page(
+                "frontend/pages/orchestration/bot_monitoring/app.py",
+                title="Bot Monitoring",
+                icon="📈",
+                url_path="bot_monitoring"
+            ),
+            st.Page(
                 "frontend/pages/orchestration/archived_bots/app.py",
                 title="Archived Bots",
                 icon="🗃️",
