@@ -348,26 +348,33 @@ if st.button("Run Backtest", type="primary"):
             return "n/a"
         return format(value, spec)
 
-    rm1, rm2, rm3, rm4 = st.columns(4)
-    rm1.metric("Net PnL (Quote)", _num("net_pnl_quote", "+,.4f"),
-               help="Total profit or loss in the quote asset (e.g. USDT), after fees. It is the sum of "
-                    "every executor's net PnL. A position still open at the end of the run is valued "
-                    "at the final mid price, so part of this can be unrealised.")
-    rm2.metric("Total Executors", r_results.get("total_executors", 0),
-               help=f"Every executor the controller created, including ones whose orders never filled "
-                    f"and were cancelled or refreshed. Only "
-                    f"{r_results.get('total_executors_with_position', 0)} of them actually traded; "
-                    f"accuracy and win/loss count only those.")
-    rm3.metric("Total Fees", f"{results.get('fees', 0):,.4f}",
-               help="Maker and taker fees paid on every fill, in the quote asset. Already subtracted "
-                    "from Net PnL.")
-    rm4.metric("Sharpe Ratio", _num("sharpe_ratio", ".2f"),
-               help=f"Average PnL change per minute divided by its volatility, scaled to a year. "
-                    f"Computed from {r_results.get('sharpe_samples', 0)} one-minute buckets. Above 1 is "
-                    f"usually considered good, but over a short window or with few trades the number "
-                    f"can be huge and means very little.")
+    rm1, rm2, rm3 = st.columns(3)
+    rm1.metric("Realized PnL", _num("realized_pnl_quote", "+,.4f"),
+               help="Profit or loss from executors that opened AND closed a position (round trips), "
+                    "after fees, in the quote asset. Does not include the current value of inventory "
+                    "the strategy is still holding at the end — that is in Unrealized PnL.")
+    rm2.metric("Unrealized PnL", _num("unrealized_pnl_quote", "+,.4f"),
+               help="Mark-to-market value of inventory still held when the run ended (including a "
+                    "position handed off as a held position, e.g. a rebalance buy), valued at the final "
+                    "mid price and net of its fees. Not yet locked in.")
+    rm3.metric("Total PnL", _num("total_pnl_quote", "+,.4f"),
+               help="Realized + Unrealized: the strategy's full economic result marked at the final mid "
+                    "price. Equals the engine's own books (the reconciliation figure).")
 
-    rm5, rm6, rm7, rm8 = st.columns(4)
+    rm4a, rm4b, rm4c = st.columns(3)
+    rm4a.metric("Total Executors", r_results.get("total_executors", 0),
+                help=f"Every executor the controller created, including ones whose orders never filled "
+                     f"and were cancelled or refreshed. Only "
+                     f"{r_results.get('total_executors_with_position', 0)} of them actually traded; "
+                     f"accuracy and win/loss count only those.")
+    rm4b.metric("Total Fees", f"{results.get('fees', 0):,.4f}",
+                help="Maker and taker fees paid on every fill, in the quote asset. Already subtracted "
+                     "from Realized and Unrealized PnL.")
+    rm4c.metric("Final Position", f"{results.get('final_position', 0):+.8g}",
+                help="Base asset (e.g. ETH) held when the run ended: positive is long, negative is "
+                     "short, 0 is flat. Its mark-to-market value is what Unrealized PnL reflects.")
+
+    rm5, rm6, rm7 = st.columns(3)
     rm5.metric("Accuracy", _num("accuracy", ".1%"),
                help="Share of executors that traded and ended with a profit. Executors that never "
                     "filled are left out. Break-even executors count as not winning.")
@@ -379,10 +386,6 @@ if st.button("Run Backtest", type="primary"):
                help="Total won by winning executors divided by total lost by losing ones. Above 1 "
                     "means wins outweighed losses. 'n/a' means no executor lost, so the ratio is "
                     "undefined rather than break-even.")
-    rm8.metric("Final Position", f"{results.get('final_position', 0):+.8g}",
-               help="Base asset (e.g. BTC) held when the run ended: positive is long, negative is "
-                    "short, 0 is flat. A non-zero value means a position was still open, and its "
-                    "value at the final mid price is included in Net PnL.")
 
     recon = results.get("reconciliation") or {}
     if recon and not recon.get("ok", True):
