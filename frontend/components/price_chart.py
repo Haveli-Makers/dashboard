@@ -187,8 +187,9 @@ def show_price_chart_dialog(backend_api_client, connector, trading_pair, account
             help="Some exchanges don't provide candles. Select an alternative source.",
             key=f"price_chart_source_{connector}",
         )
+    exchange_name = connector.split("__")[0]  
     if source is None:
-        st.info(f"{connector} has no candle feed. Pick another exchange to chart {trading_pair}.")
+        st.info(f"{exchange_name} has no candle feed. Pick another exchange to chart {trading_pair}.")
         return
 
     intervals = get_candle_intervals(backend_api_client, source)
@@ -227,8 +228,8 @@ def show_price_chart_dialog(backend_api_client, connector, trading_pair, account
     markers = to_trade_markers(trades, ohlc, interval)
 
     caption = f"{source} · {trading_pair} · {interval} · {len(ohlc)} candles"
-    if source != connector:
-        caption += f" · trading on {connector}"
+    if source != exchange_name:
+        caption += f" · trading on {exchange_name}"
     if markers:
         caption += f" · {len(markers)} of your trades"
     st.caption(caption)

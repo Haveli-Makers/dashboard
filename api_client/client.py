@@ -57,6 +57,7 @@ class HummingbotAPIClient:
                 auth=self.auth,
                 timeout=self.timeout,
                 headers=self._default_headers,
+                connector=aiohttp.TCPConnector(keepalive_timeout=3)
             )
             self._accounts = AccountsRouter(self._session, self.base_url)
             self._archived_bots = ArchivedBotsRouter(self._session, self.base_url)

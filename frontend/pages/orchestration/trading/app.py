@@ -39,6 +39,8 @@ if "selected_market" not in st.session_state:
     st.session_state.selected_market = {"connector": "binance_perpetual", "trading_pair": "BTC-USDT"}
 if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = False  # Start with manual refresh
+if "refresh_interval" not in st.session_state:
+    st.session_state.refresh_interval = 10  # seconds; configurable when auto-refresh is on
 
 # Trading form session state
 if "trade_price_set_by_user" not in st.session_state:
@@ -46,8 +48,9 @@ if "trade_price_set_by_user" not in st.session_state:
 if "last_order_type" not in st.session_state:
     st.session_state.last_order_type = "market"  # Track order type changes
 
-# Set refresh interval for real-time updates
-REFRESH_INTERVAL = 30  # seconds
+MIN_REFRESH_INTERVAL = 3  
+MAX_REFRESH_INTERVAL = 300  # seconds
+FUNDING_INFO_TTL = 30  
 MARKET_DATA_TTL = 3  # seconds; lets form edits and clicks reuse the market data instead of re-fetching
 ORDER_BOOK_ROWS = 22
 
@@ -79,7 +82,7 @@ def _fetch_quote_volume(server, connector, trading_pair, price, is_buy):
     )
 
 
-@st.cache_data(ttl=REFRESH_INTERVAL, show_spinner=False)
+@st.cache_data(ttl=FUNDING_INFO_TTL, show_spinner=False)
 def _fetch_funding_info(server, connector, trading_pair):
     return backend_api_client.market_data.get_funding_info(
         connector_name=connector,
@@ -222,24 +225,64 @@ def get_positions(account_name=None):
         return []
 
 
-def get_active_orders(account_name=None):
-    """Get active orders."""
+def get_active_orders(account_name=None, connector_name=None, trading_pairs=None):
+    """Get active orders for an account, independent of the Account & Market trading pair."""
+    def _call(**kwargs):
+        try:
+            response = backend_api_client.trading.get_active_orders(limit=200, **kwargs)
+            return _extract_data(response)
+        except Exception as e:
+            st.error(f"Failed to fetch active orders: {e}")
+            return []
+
+    base_kwargs = {}
+    if account_name:
+        base_kwargs["account_names"] = [account_name]
+    if connector_name:
+        base_kwargs["connector_names"] = [connector_name]
+
+    orders = _call(**base_kwargs)
+
+    if trading_pairs:
+        orders = orders + _call(**base_kwargs, trading_pairs=trading_pairs)
+
+    seen, unique = set(), []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        key = (
+            order.get("order_id")
+            or order.get("client_order_id")
+            or order.get("exchange_order_id")
+            or id(order)
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(order)
+    return unique
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_active_orders_capability(server, exchange_name):
+    return backend_api_client.connectors.get_active_orders_capability(exchange_name)
+
+
+def get_active_orders_capability(connector):
+    """Get the active orders capability of a connector, returning a tuple of (supports_all_open_orders_without_pair, can_fetch_exchange_open_orders)."""
+    if not connector:
+        return False, False
+    exchange_name = str(connector).split("__")[0]  
     try:
-        kwargs = {"limit": 100}
-        if account_name:
-            kwargs["account_names"] = [account_name]
-        response = backend_api_client.trading.get_active_orders(**kwargs)
-        if isinstance(response, list):
-            return response
-        elif isinstance(response, dict):
-            if response.get("status") == "success":
-                return response.get("data", [])
-            elif "data" in response:
-                return response.get("data", [])
-        return []
-    except Exception as e:
-        st.error(f"Failed to fetch active orders: {e}")
-        return []
+        cap = _fetch_active_orders_capability(get_server_cache_key(), exchange_name)
+    except Exception:
+        return False, True
+    if not isinstance(cap, dict):
+        return False, True
+    return (
+        bool(cap.get("supports_all_open_orders_without_pair")),
+        bool(cap.get("can_fetch_exchange_open_orders")),
+    )
 
 
 def _extract_data(response):
@@ -268,14 +311,13 @@ def get_order_history(start_date=None, end_date=None, tz=None):
     except Exception:
         pass
 
+    # Exchange-side trades for every pair on the selected exchange, not just the one in the order book
     exchange_orders = []
     if st.session_state.selected_account and st.session_state.selected_connector:
         try:
-            selected_pair = st.session_state.selected_market.get("trading_pair")
             response = backend_api_client.trading.search_exchange_orders(
                 account_names=[st.session_state.selected_account],
                 connector_names=[st.session_state.selected_connector],
-                trading_pairs=[selected_pair] if selected_pair else None,
                 start_time=start_ms,
                 end_time=end_ms,
                 limit=200,
@@ -497,8 +539,6 @@ def render_orders_table(orders_data):
         st.info("No active orders found.")
         return
 
-    st.subheader("📋 Active Orders")
-
     df_with_cancel = df.copy()
     df_with_cancel["cancel"] = False
 
@@ -541,6 +581,16 @@ def render_orders_table(orders_data):
 
     if "cancel" in edited_df.columns:
         selected_orders = edited_df[edited_df["cancel"]]
+        # Orders placed on the exchange's website/app (source == "exchange") aren't tracked by
+        # Hummingbot, so they can't be cancelled through it.
+        if "source" in selected_orders.columns:
+            external = selected_orders[selected_orders["source"] == "exchange"]
+            selected_orders = selected_orders[selected_orders["source"] != "exchange"]
+            if not external.empty:
+                st.warning(
+                    f"{len(external)} selected order(s) were placed outside Hummingbot (on the exchange "
+                    "website or app). Cancel those on the exchange."
+                )
         if not selected_orders.empty and st.button(f"❌ Cancel Selected ({len(selected_orders)}) Orders",
                                                    type="secondary"):
             with st.spinner("Cancelling orders..."):
@@ -560,8 +610,16 @@ st.caption("Execute trades, monitor positions, and analyze markets")
 # Get accounts and credentials
 accounts_list, credentials_dict = get_accounts_and_credentials()
 
+MASTER_CREDENTIAL = "Master"
+
+
+def split_credential_key(storage_key):
+    exchange, separator, alias = str(storage_key).partition("__")
+    return exchange, (alias if separator and alias else MASTER_CREDENTIAL)
+
+
 st.subheader("🏦 Account & Market")
-acc_col, conn_col, pair_col = st.columns(3)
+acc_col, conn_col, cred_col, pair_col = st.columns(4)
 
 with acc_col:
     if accounts_list:
@@ -591,21 +649,39 @@ with conn_col:
             credentials = [{"connector_name": k, **v} for k, v in credentials.items()]
         else:
             credentials = []
-        default_cred = credentials[0] if credentials else None
-        if default_cred and credentials:
-            connector = st.selectbox(
+        credentials_by_exchange = {}
+        for cred in credentials:
+            exchange, account_type = split_credential_key(cred["connector_name"])
+            credentials_by_exchange.setdefault(exchange, {})[account_type] = cred["connector_name"]
+
+        if credentials_by_exchange:
+            exchange = st.selectbox(
                 "📡 Exchange",
-                [cred["connector_name"] for cred in credentials],
+                list(credentials_by_exchange),
                 index=0,
                 key="connector_selector"
             )
-            st.session_state.selected_connector = connector
         else:
             st.error("No credentials found for this account")
-            connector = None
+            exchange = None
     else:
         st.error("No credentials available")
-        connector = None
+        exchange = None
+
+with cred_col:
+    connector = None
+    if exchange:
+        account_types = credentials_by_exchange[exchange]
+        type_options = sorted(account_types, key=lambda t: (t != MASTER_CREDENTIAL, t.lower()))
+        account_type = st.selectbox(
+            "🔑 Account Type",
+            type_options,
+            index=0,
+            key=f"account_type_selector_{selected_account}_{exchange}",
+            help="Master or sub-account credential for this exchange (as on the Credentials page)"
+        )
+        connector = account_types[account_type]
+        st.session_state.selected_connector = connector
     if connector is None:
         st.session_state.selected_connector = None
         st.session_state.selected_market = {}
@@ -629,23 +705,34 @@ else:
 CURRENCY, USDT_INR_RATE = resolve_currency_and_rate(st.session_state.selected_connector)
 
 st.divider()
-market_title_col, refresh_toggle_col, refresh_btn_col = st.columns([4, 1, 1])
+market_title_col, refresh_toggle_col, refresh_interval_col, refresh_btn_col = st.columns([2.6, 1.4, 1, 1])
 with market_title_col:
     st.subheader("📊 Market Data")
 with refresh_toggle_col:
     auto_refresh = st.toggle(
         "🔄 Auto-refresh",
         value=st.session_state.auto_refresh_enabled,
-        help=f"Refresh data every {REFRESH_INTERVAL} seconds"
+        help=f"Refresh data every {st.session_state.refresh_interval} seconds"
     )
     st.session_state.auto_refresh_enabled = auto_refresh
+with refresh_interval_col:
+    st.session_state.refresh_interval = int(st.number_input(
+        "Interval (s)",
+        min_value=MIN_REFRESH_INTERVAL,
+        max_value=MAX_REFRESH_INTERVAL,
+        value=st.session_state.refresh_interval,
+        step=1,
+        key="refresh_interval_input", 
+        disabled=not auto_refresh,
+        help="How often market data refreshes while auto-refresh is on"
+    ))
 with refresh_btn_col:
     if st.button("🔄 Refresh Now", use_container_width=True, type="primary"):
         clear_market_data_cache()
         st.rerun()
 
 # Market sections refresh as fragments, so auto-refresh never reruns (and resets) the trade form
-MARKET_RUN_EVERY = REFRESH_INTERVAL if st.session_state.auto_refresh_enabled else None
+MARKET_RUN_EVERY = st.session_state.refresh_interval if st.session_state.auto_refresh_enabled else None
 
 
 def render_market_header(connector, trading_pair):
@@ -662,8 +749,11 @@ def render_market_header(connector, trading_pair):
     display_rate = quote_rate(trading_pair, USDT_INR_RATE)
 
     is_perpetual = "perpetual" in connector.lower()
-    header_cols = st.columns(7 if is_perpetual else 6)
-    bid_col, ask_col, spread_col, depth_pct_col, buy_depth_col, sell_depth_col = header_cols[:6]
+    n_cols = 4 if is_perpetual else 3
+    header_cols = st.columns(n_cols)
+    bid_col, ask_col, spread_col = header_cols[:3]
+    depth_cols = st.columns(n_cols)
+    depth_pct_col, buy_depth_col, sell_depth_col = depth_cols[:3]
 
     with bid_col:
         full_bid = f"{CURRENCY}{bid_price * display_rate:,.{precision}f}" if bid_price else "N/A"
@@ -724,7 +814,7 @@ def render_market_header(connector, trading_pair):
             st.metric(f"📊 Sell Depth ({CURRENCY})", "N/A")
 
     if is_perpetual:
-        with header_cols[6]:
+        with header_cols[3]:
             funding_data = get_funding_rate(connector, trading_pair)
             if funding_data and "funding_rate" in funding_data:
                 funding_rate = float(funding_data["funding_rate"]) * 100
@@ -742,8 +832,51 @@ else:
     st.info("Select account and pair to view extended market data")
 
 
-def render_coindcx_orderbook(order_book, current_price, trading_pair):
-    """Render a CoinDCX-style order book."""
+def _price_key(price):
+    """Normalize a price so an order's price and the matching book level compare equal."""
+    return round(float(price), 8)
+
+
+def get_open_order_levels(connector, trading_pair):
+    """Get the user's open orders for the selected account, grouped by price level and side."""
+    levels = {"BUY": {}, "SELL": {}}
+    account = st.session_state.selected_account
+    if not account:
+        return levels
+    try:
+        response = backend_api_client.trading.get_active_orders(
+            account_names=[account],
+            connector_names=[connector],
+            trading_pairs=[trading_pair],
+            limit=100,
+        )
+    except Exception:
+        return levels
+
+    for order in _extract_data(response):
+        if not isinstance(order, dict) or order.get("trading_pair") != trading_pair:
+            continue
+        if order.get("connector_name") and order.get("connector_name") != connector:
+            continue
+        side_raw = str(order.get("trade_type") or order.get("side") or "").upper()
+        side = "BUY" if "BUY" in side_raw else "SELL" if "SELL" in side_raw else None
+        try:
+            price = float(order.get("price") or 0)
+            filled = order.get("filled_amount", order.get("executed_amount_base")) or 0
+            remaining = float(order.get("amount") or 0) - float(filled)
+        except (TypeError, ValueError):
+            continue
+        if side is None or price <= 0 or remaining <= 0:
+            continue
+        key = _price_key(price)
+        levels[side][key] = levels[side].get(key, 0) + remaining
+    return levels
+
+
+def render_coindcx_orderbook(order_book, current_price, trading_pair, my_orders=None):
+    """Render a CoinDCX-style order book. Price levels holding one of the account's open
+    orders (`my_orders`, from get_open_order_levels) are highlighted."""
+    my_orders = my_orders or {"BUY": {}, "SELL": {}}
     raw_base_token, raw_quote_token = split_trading_pair(trading_pair)
     base_token = html.escape(raw_base_token)
     quote_token = html.escape(raw_quote_token)
@@ -781,6 +914,12 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
     }
     .ob-ask .ob-depth-bar { background: #f03b3b; }
     .ob-bid .ob-depth-bar { background: #22c55e; }
+    .ob-row.ob-mine { background: rgba(250, 204, 21, 0.10); box-shadow: inset 3px 0 0 #facc15; }
+    .ob-row.ob-mine:hover { background: rgba(250, 204, 21, 0.16); }
+    .ob-row.ob-mine span:first-child { padding-left: 8px; }
+    .ob-row.ob-mine span:first-child::before { content: "●"; color: #facc15; font-size: 8px; margin-right: 5px; vertical-align: middle; }
+    .ob-legend { font-size: 11px; color: #888; margin-top: 6px; }
+    .ob-legend b { color: #facc15; }
     .ob-mid {
         text-align: center; padding: 8px 0; font-size: 18px; font-weight: 700;
         border-top: 1px solid #333; border-bottom: 1px solid #333; margin: 5px 0;
@@ -829,13 +968,22 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
         v = float(v)
         return f"{v:,.4f}" if v < 1000 else f"{v:,.2f}"
 
-    def ask_row(item):
+    shown_mine = []  
+
+    def book_row(item, side_class, max_vol, my_levels):
         price = float(item["price"])
         qty = float(item["amount"])
         total = price * qty
-        bar_pct = int((qty / max_ask_vol) * 100)
+        bar_pct = int((qty / max_vol) * 100)
+        mine_qty = my_levels.get(_price_key(price))
+        classes = f"ob-row {side_class}"
+        title = ""
+        if mine_qty:
+            shown_mine.append(mine_qty)
+            classes += " ob-mine"
+            title = f' title="Your open order: {html.escape(fmt_qty(mine_qty))} {base_token}"'
         return (
-            f'<div class="ob-row ob-ask">'
+            f'<div class="{classes}"{title}>'
             f'<div class="ob-depth-bar" style="width:{bar_pct}%"></div>'
             f'<span>{fmt_price(price)}</span>'
             f'<span>{fmt_qty(qty)}</span>'
@@ -843,19 +991,11 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
             f'</div>'
         )
 
+    def ask_row(item):
+        return book_row(item, "ob-ask", max_ask_vol, my_orders["SELL"])
+
     def bid_row(item):
-        price = float(item["price"])
-        qty = float(item["amount"])
-        total = price * qty
-        bar_pct = int((qty / max_bid_vol) * 100)
-        return (
-            f'<div class="ob-row ob-bid">'
-            f'<div class="ob-depth-bar" style="width:{bar_pct}%"></div>'
-            f'<span>{fmt_price(price)}</span>'
-            f'<span>{fmt_qty(qty)}</span>'
-            f'<span>{fmt_total(total)}</span>'
-            f'</div>'
-        )
+        return book_row(item, "ob-bid", max_bid_vol, my_orders["BUY"])
 
     header_html = (
         f'<div class="ob-header-row">'
@@ -882,13 +1022,24 @@ def render_coindcx_orderbook(order_book, current_price, trading_pair):
     else:
         rows_html = "".join(bid_row(b) for b in bids) + mid_html
 
-    full_html = css + f'<div class="ob-wrap">{header_html}{rows_html}</div>'
+    total_mine = sum(len(levels) for levels in my_orders.values())
+    legend_html = ""
+    if total_mine:
+        hidden = total_mine - len(shown_mine)
+        legend_html = (
+            f'<div class="ob-legend"><b>●</b> Your open orders'
+            + (f' · {hidden} outside the visible depth' if hidden > 0 else '')
+            + '</div>'
+        )
+
+    full_html = css + f'<div class="ob-wrap">{header_html}{rows_html}{legend_html}</div>'
     st.markdown(full_html, unsafe_allow_html=True)
 
 
 def render_orderbook_section(connector, trading_pair):
     order_book, current_price = get_market_snapshot(connector, trading_pair)
-    render_coindcx_orderbook(order_book, current_price, trading_pair)
+    my_orders = get_open_order_levels(connector, trading_pair)
+    render_coindcx_orderbook(order_book, current_price, trading_pair, my_orders)
 
 
 def render_trade_panel(connector, trading_pair, current_price):
@@ -1029,7 +1180,8 @@ def render_trade_panel(connector, trading_pair, current_price):
                 place_order(order_data)
 
     st.write("")
-    st.info(f"🎯 {st.session_state.selected_connector}\n{st.session_state.selected_market['trading_pair']}")
+    exchange, account_type = split_credential_key(st.session_state.selected_connector)
+    st.info(f"🎯 {exchange} · {account_type}\n{st.session_state.selected_market['trading_pair']}")
 
 
 def show_trading_data():
@@ -1059,12 +1211,16 @@ def show_trading_data():
         st.subheader("💸 Execute Trade")
         render_trade_panel(connector, trading_pair, current_price)
 
-    # Data tables section
+
+def show_account_data():
+    if not st.session_state.selected_account:
+        return
+
     st.divider()
 
-    # Get positions and orders
+    # Each tab draws from the selected account (and exchange), independent of the
+    # trading pair chosen in Account & Market — that pair only drives Market Data / trading.
     positions = get_positions(st.session_state.selected_account)
-    orders = get_active_orders(st.session_state.selected_account)
 
     # Display in tabs - Balances first
     tab1, tab2, tab3, tab4 = st.tabs(["💰 Balances", "📊 Positions", "📋 Active Orders", "📜 Order History"])
@@ -1074,9 +1230,69 @@ def show_trading_data():
     with tab2:
         render_positions_table(positions)
     with tab3:
-        render_orders_table(orders)
+        render_active_orders_tab()
     with tab4:
         render_order_history_table()
+
+
+def render_active_orders_tab():
+    st.subheader("📋 Active Orders")
+
+    account = st.session_state.selected_account
+    connector = st.session_state.selected_connector
+    if not account:
+        st.info("Select an account to view active orders.")
+        return
+
+    supports_pairless, can_fetch_exchange = get_active_orders_capability(connector)
+
+    trading_pairs = []
+    pairs_raw = ""
+
+    if supports_pairless:
+        st.success(
+            "✅ All open orders for this exchange are fetched automatically, including orders "
+            "placed on the exchange website or app — no trading pair needed."
+        )
+    elif can_fetch_exchange:
+        st.info(
+            "🤖 Orders tracked by the bot are listed across **all** trading pairs automatically. "
+            "This exchange can't list orders placed on its website or app without a market, so to "
+            "also pull those, enter the trading pair(s) below."
+        )
+    else:
+        st.warning(
+            "🤖 Showing bot-tracked orders across all trading pairs. This exchange's API can't "
+            "list orders placed on its website or app, so those can't be shown here."
+        )
+
+    if can_fetch_exchange and not supports_pairless:
+        pair_col, btn_col = st.columns([4, 1], vertical_alignment="bottom")
+        with pair_col:
+            pairs_raw = st.text_input(
+                "Trading pair(s) for exchange-side orders",
+                placeholder="e.g. BTC-USDT, ETH-INR",
+                key="active_orders_pairs",
+                help="Comma-separated. Used only to also fetch open orders placed outside the bot. "
+                     "Leave empty to show just bot-tracked orders.",
+            )
+        with btn_col:
+            if st.button("🔄 Refresh", use_container_width=True, key="refresh_active_orders"):
+                st.rerun()
+    else:
+        if st.button("🔄 Refresh", key="refresh_active_orders"):
+            st.rerun()
+
+    if pairs_raw:
+        trading_pairs = [p.strip().upper() for p in pairs_raw.split(",") if p.strip()]
+        invalid = [p for p in trading_pairs if not is_valid_pair(p)]
+        if invalid:
+            st.warning(f"Ignoring invalid pair(s): {', '.join(invalid)}")
+        trading_pairs = [p for p in trading_pairs if is_valid_pair(p)]
+
+    with st.spinner("Fetching active orders..."):
+        orders = get_active_orders(account, connector, trading_pairs or None)
+    render_orders_table(orders)
 
 
 def _parse_mixed_timestamp(value):
@@ -1248,3 +1464,4 @@ def render_balances_table():
 
 # Display trading data
 show_trading_data()
+show_account_data()

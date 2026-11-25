@@ -26,3 +26,7 @@ class ConnectorsRouter(BaseRouter):
     async def get_supported_order_types(self, connector_name: str) -> Dict[str, Any]:
         """Get order types supported by a specific connector."""
         return await self._get(f"/connectors/{connector_name}/order-types")
+
+    async def get_active_orders_capability(self, connector_name: str) -> Dict[str, Any]:
+        """Get the active orders capability of a specific connector."""
+        return await self._get(f"/connectors/{connector_name}/active-orders-capability")
