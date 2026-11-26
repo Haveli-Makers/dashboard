@@ -12,7 +12,7 @@ Times are IST. Needs an api-server with bot monitoring on (INFLUXDB_ENABLED); se
 import asyncio
 import math
 from collections import Counter
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import aiohttp
 import pandas as pd
@@ -288,12 +288,23 @@ def orders_figure(data: Dict, minutes: int, digits: int, revision: str) -> Tuple
     mids = None
     if not price.empty:
         price["time"] = local(price["time"])
+        # The spread as a light band, and the best bid and best ask as their own lines on its edges. Hovering either
+        # line shows the whole quote at that moment.
         figure.add_trace(go.Scatter(x=price["time"], y=price["best_ask"], mode="lines", line=dict(width=0),
                                     hoverinfo="skip", showlegend=False))
         figure.add_trace(go.Scatter(x=price["time"], y=price["best_bid"], mode="lines", line=dict(width=0),
-                                    fill="tonexty", fillcolor=BAND_COLOR, name="bid/ask", hoverinfo="skip"))
+                                    fill="tonexty", fillcolor=BAND_COLOR, hoverinfo="skip", showlegend=False))
+        spread_pct = (price["best_ask"] - price["best_bid"]) / price["mid_price"] * 100
+        quote = (f"best bid %{{customdata[0]:,.{digits}f}} · best ask %{{customdata[1]:,.{digits}f}}<br>"
+                 "spread %{customdata[2]:.3f}%<extra></extra>")
+        for side, column, name in (("BUY", "best_bid", "best bid"), ("SELL", "best_ask", "best ask")):
+            figure.add_trace(go.Scatter(x=price["time"], y=price[column], mode="lines", name=name,
+                                        line=dict(color=SIDE_COLORS[side], width=1.5),
+                                        customdata=pd.concat([price["best_bid"], price["best_ask"], spread_pct],
+                                                             axis=1).values,
+                                        hovertemplate=f"<b>{name}</b><br>{quote}"))
         figure.add_trace(go.Scatter(x=price["time"], y=price["mid_price"], mode="lines", name="mid price",
-                                    line=dict(color=MID_COLOR, width=1.5),
+                                    line=dict(color=MID_COLOR, width=1, dash="dot"),
                                     hovertemplate=f"mid %{{y:,.{digits}f}}<extra></extra>"))
         mids = price[["time", "mid_price"]].dropna().sort_values("time")
         mids["time"] = mids["time"].astype("datetime64[ns]")  # merge_asof needs one time resolution on both sides
@@ -384,10 +395,11 @@ def orders_figure(data: Dict, minutes: int, digits: int, revision: str) -> Tuple
     return figure, pick_map
 
 
-def handle_click(event: Any, pick_map: Dict[int, List[str]]):
+def handle_click(event: Any, known: Set[str], pick_map: Optional[Dict[int, List[str]]] = None):
     """
     A click on an order line or a fill opens that order below the chart. Only a new click counts: the chart keeps its
-    selection across refreshes, and replaying it would undo a choice made in the "Inspect an order" box.
+    selection across refreshes, and replaying it would undo a choice made in the "Inspect an order" box. Clicks on
+    the price lines (no order there) are ignored.
     """
     points = list(((event or {}).get("selection") or {}).get("points") or [])
     clicked = [(point.get("curve_number"), point.get("point_index", point.get("point_number"))) for point in points]
@@ -396,10 +408,10 @@ def handle_click(event: Any, pick_map: Dict[int, List[str]]):
     st.session_state["bm_last_click"] = clicked
     for point, (curve, index) in zip(points, clicked):
         order_id = (point.get("customdata") or [None])[0]
-        if not order_id:
+        if not isinstance(order_id, str) and pick_map:
             ids = pick_map.get(curve, [])
             order_id = ids[index] if index is not None and index < len(ids) else None
-        if order_id:
+        if isinstance(order_id, str) and order_id in known:
             pick_order(order_id)
             return
 
@@ -471,13 +483,48 @@ def ladder_chart(orders: pd.DataFrame, mid: Optional[float], digits: int) -> go.
     return chart
 
 
+def active_orders(ladder: Dict, digits: int):
+    """The bot's open orders now, from its latest open-order snapshot (bots write one every 5 seconds)."""
+    orders = frame(ladder.get("orders"))
+    if not orders.empty:
+        orders = orders[orders["price"].notna()]
+    if orders.empty:
+        st.markdown("**Active orders:** none right now.")
+        return
+    mid = num((ladder.get("price") or {}).get("mid_price"))
+    amount = orders["amount"].map(num)
+    blank = pd.Series(None, index=orders.index, dtype=object)
+    st.markdown(f"**Active orders ({len(orders)})**")
+    st.dataframe(pd.DataFrame({
+        "Side": orders["side"],
+        "Price": orders["price"].map(lambda p: fmt_price(p, digits)),
+        "From mid": ((orders["price"] / mid - 1) * 100).map(lambda d: f"{d:+.3f}%") if mid else "–",
+        "Amount": amount.map(fmt_amount),
+        "Filled": orders.get("filled", blank).map(lambda v: fmt_amount(num(v))),
+        "Value (quote)": (orders["price"] * amount).map(lambda v: fmt_quote(v, digits=2)),
+        "Open for": orders.get("age_s", blank).map(lambda s: "–" if num(s) is None else duration(num(s))),
+        "Level": orders.get("level", blank).map(text),
+        "Order id": orders["order_id"],
+    }), hide_index=True, width="stretch")
+    age = num(ladder.get("snapshot_age_s"))
+    st.caption("From the bot's latest open-order snapshot" + (f", {duration(age)} ago" if age is not None else "")
+               + ". Highest price first: sells above buys.")
+
+
 def ladder_panel(ladder: Dict, digits: int):
     price, performance, state = ladder.get("price") or {}, ladder.get("performance") or {}, ladder.get("state") or {}
     st.markdown("**Right now**")
-    mid = num(price.get("mid_price"))
+    mid, bid, ask = num(price.get("mid_price")), num(price.get("best_bid")), num(price.get("best_ask"))
     if mid is not None:
-        st.metric("Mid price", fmt_price(mid, digits),
-                  help=f"bid {fmt_price(price.get('best_bid'), digits)} · ask {fmt_price(price.get('best_ask'), digits)}")
+        st.metric("Mid price", fmt_price(mid, digits))
+    if bid is not None and ask is not None:
+        spread = fmt_price(ask - bid, digits) + (f" ({(ask - bid) / mid * 100:.3f}%)" if mid else "")
+        st.table(pd.DataFrame([("Best bid", fmt_price(bid, digits)), ("Best ask", fmt_price(ask, digits)),
+                               ("Spread", spread)], columns=["What", "Value"]), hide_index=True, hide_header=True)
+        if price.get("time"):
+            age = (now_local() - local([price["time"]]).iloc[0]).total_seconds()
+            if age > 15:
+                st.caption(f"Last price from the bot {duration(age)} ago: it isn't writing prices now.")
     orders = frame(ladder.get("orders"))
     if not orders.empty:
         orders = orders[orders["price"].notna()]
@@ -547,12 +594,17 @@ def orders_view(metrics: Any, minutes: int):
     digits = price_digits([row.get("mid_price") for row in data.get("price") or []]
                           + [segment.get("price") for segment in segments]
                           + [(ladder.get("price") or {}).get("mid_price")])
+    known = {segment["order_id"] for segment in segments} | {fill["order_id"] for fill in fills}
+    chart_key = f"bm_orders_chart_{view}"
     left, right = st.columns([5, 2])
     with left:
+        # Streamlit names a chart after its whole figure, so a click's rerun, which draws newer prices, gets a new
+        # chart and loses the click. Read the click from the chart as it was clicked, before drawing the new one.
+        handle_click(st.session_state.get(chart_key), known)
         figure, pick_map = orders_figure(data, minutes, digits, revision=view)
-        event = st.plotly_chart(figure, width="stretch", on_select="rerun", selection_mode="points",
-                                key=f"bm_orders_chart_{view}")
-        handle_click(event, pick_map)
+        event = st.plotly_chart(figure, width="stretch", on_select="rerun", selection_mode="points", key=chart_key)
+        handle_click(event, known, pick_map)  # the same figure as before: the click arrives here (once)
+        active_orders(ladder, digits)
         order_details(data, digits)
     with right:
         ladder_panel(ladder, digits)

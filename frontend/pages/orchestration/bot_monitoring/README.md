@@ -19,11 +19,13 @@ Only the open tab asks the api-server for data. With **Live** on, it refreshes e
   periods, incidents, and what the api-server's health watcher noticed. A bot is *hung* when its strategy loop stops
   while its process keeps running, and *down* when both stop. Time a bot was stopped on purpose doesn't count against
   its uptime.
-- **Orders vs price**: one bot's bid/ask and mid price, each order as a line from when it was placed to when it was
-  filled or cancelled, its fills (hollow triangles are partial fills), and the grid reference for grid bots. Hover
-  for details; click an order, or pick it in the box below the chart, for its full story. On the right: the bot's
-  open orders and PnL right now. A bot that trades several markets gets a **Market** box: the chart shows one
-  market at a time.
+- **Orders vs price**: one bot's best bid and best ask (their own lines, with the spread shaded between them) and
+  mid price, each order as a line from when it was placed to when it was filled or cancelled, its fills (hollow
+  triangles are partial fills), and the grid reference for grid bots. Hover for details; click an order, or pick it
+  in the box below the chart, for its full story. Under the chart, **Active orders**: the bot's open orders now
+  (side, price, distance from mid, amount, filled, value, age, order id). On the right: best bid, best ask, spread,
+  the open orders by price, and PnL right now. A bot that trades several markets gets a **Market** box: the chart
+  shows one market at a time.
 - **PnL**: global, realized and unrealized PnL and volume per bot and controller. Only V2 bots (with controllers)
   report PnL. Values are in each pair's quote currency.
 - **Market data**: order book health per market (mid, spread, depth, seconds since the book last changed), from the
