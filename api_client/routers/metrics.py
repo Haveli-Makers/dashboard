@@ -8,7 +8,7 @@ End = Optional[Union[str, datetime]]
 
 class MetricsRouter(BaseRouter):
     """
-    Bot monitoring: what bots, the market recorder and the API's bot health watcher store in InfluxDB.
+    Monitoring: what bots, account monitors, the market recorder and the API's bot health watcher store in InfluxDB.
     Windows are in minutes (5 to 4320, the most InfluxDB 3 Core reads in one query) and end at `end` (UTC) or now.
     Every endpoint except get_health answers 503 while monitoring is off on the API (INFLUXDB_ENABLED).
     """
@@ -71,6 +71,25 @@ class MetricsRouter(BaseRouter):
         return await self._get("/metrics/feeds")
 
     async def get_market(self, exchange: str, pair: str, minutes: int = 60, end: End = None) -> List[Dict[str, Any]]:
-        """One market over time: mid price, spread %, depth within 1% of mid, and order book age."""
+        """One market over time: best bid and ask, mid price, spread %, depth within 1% of mid, order book age."""
         return await self._get("/metrics/market",
                                params=self._params(exchange=exchange, pair=pair, minutes=minutes, end=end))
+
+    async def get_accounts(self) -> List[Dict[str, Any]]:
+        """Accounts an account monitor wrote about in the last day, each with its latest update (age_s, errors)."""
+        return await self._get("/metrics/accounts")
+
+    async def get_balances(self, account: str, exchange: str, minutes: int = 360, end: End = None) -> Dict[str, Any]:
+        """One account's balances: `latest` per asset, and `history` (total and available per asset over time)."""
+        return await self._get("/metrics/balances",
+                               params=self._params(account=account, exchange=exchange, minutes=minutes, end=end))
+
+    async def get_account_orders(self, account: str, exchange: str) -> Dict[str, Any]:
+        """One account's open orders now, whoever placed them, with snapshot_age_s and the latest error."""
+        return await self._get("/metrics/account-orders", params=self._params(account=account, exchange=exchange))
+
+    async def get_fills(self, account: str, exchange: str, minutes: int = 1440, end: End = None,
+                        pair: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
+        """One account's fills in the window, newest first."""
+        params = self._params(account=account, exchange=exchange, minutes=minutes, end=end, pair=pair, limit=limit)
+        return await self._get("/metrics/fills", params=params)

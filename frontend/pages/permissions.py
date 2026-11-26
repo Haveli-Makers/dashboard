@@ -75,11 +75,13 @@ def private_pages():
                 icon="🦅",
                 url_path="instances"
             ),
+            # Bot Monitoring (bot health, orders per bot, PnL) is hidden for now; its code stays in
+            # frontend/pages/orchestration/bot_monitoring/. Put its st.Page back here to show it again.
             st.Page(
-                "frontend/pages/orchestration/bot_monitoring/app.py",
-                title="Bot Monitoring",
-                icon="📈",
-                url_path="bot_monitoring"
+                "frontend/pages/orchestration/account_monitoring/app.py",
+                title="Account Monitoring",
+                icon="🏦",
+                url_path="account_monitoring"
             ),
             st.Page(
                 "frontend/pages/orchestration/archived_bots/app.py",
