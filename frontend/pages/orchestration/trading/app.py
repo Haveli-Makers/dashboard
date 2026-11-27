@@ -1456,7 +1456,7 @@ def render_balances_table():
             ),
             "value": st.column_config.NumberColumn(
                 f"Value ({CURRENCY})",
-                format=f"{CURRENCY}%.2f"
+                format=f"{CURRENCY}%.4f"
             )
         }
     )
