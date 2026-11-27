@@ -35,6 +35,7 @@ def market_data_error(trading_pair, connector, raw_error, data="market data"):
     """Translate raw exchange/API errors into a message a user can act on. `data` names what was being
     fetched, e.g. "candles" or "the order book"."""
     error = str(raw_error).lower()
+    connector = str(connector).partition("__")[0] if connector else connector
     if "not enough values to unpack" in error or "invalid pair format" in error:
         return f"{trading_pair} is not in BASE-QUOTE format. Enter it like USDT-INR or BTC-USDT."
     if any(marker in error for marker in UNKNOWN_PAIR_ERRORS):
