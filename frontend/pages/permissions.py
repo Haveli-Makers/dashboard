@@ -43,12 +43,12 @@ def private_pages():
                 icon="🔑",
                 url_path="creds"
             ),
-            st.Page(
-                "frontend/pages/orchestration/portfolio/app.py",
-                title="Portfolio",
-                icon="💰",
-                url_path="portfolio"
-            ),
+            # st.Page(
+            #     "frontend/pages/orchestration/portfolio/app.py",
+            #     title="Portfolio",
+            #     icon="💰",
+            #     url_path="portfolio"
+            # ),
             st.Page(
                 "frontend/pages/orchestration/trading/app.py",
                 title="Trading",
