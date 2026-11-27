@@ -29,7 +29,7 @@ chose to monitor exchange accounts first, so the account page is the one in the 
 - For Account Monitoring: hummingbot's `account_monitor` script running for each account. For Bot Monitoring: bots
   running with the `INFLUXDB_*` settings.
 - **Streamlit 1.62 or newer.** The pages use lazy tabs (`tab.open`) and `persist_state`, and were tested on 1.62.0.
-  The `streamlit>=1.42.0` floor in `requirements.txt` is too low for them.
+  `requirements.txt` and `environment_conda.yml` ask for `streamlit>=1.62.0`, so an older environment gets upgraded.
 
 ## Using Account Monitoring
 
