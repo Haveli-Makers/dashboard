@@ -540,6 +540,18 @@ def render_orders_table(orders_data):
         return
 
     df_with_cancel = df.copy()
+
+    df_with_cancel = df_with_cancel.drop(
+        columns=[c for c in ("fee_paid", "fee_currency") if c in df_with_cancel.columns]
+    )
+
+    if "connector_name" in df_with_cancel.columns:
+        df_with_cancel["_connector_name_full"] = df_with_cancel["connector_name"]
+        split = df_with_cancel["connector_name"].apply(split_credential_key)
+        df_with_cancel["connector_name"] = split.str[0]
+        loc = df_with_cancel.columns.get_loc("connector_name") + 1
+        df_with_cancel.insert(loc, "account_type", split.str[1])
+
     df_with_cancel["cancel"] = False
 
     column_config = {
@@ -548,6 +560,9 @@ def render_orders_table(orders_data):
             help="Select orders to cancel",
             default=False,
         ),
+        "connector_name": st.column_config.TextColumn("Exchange"),
+        "account_type": st.column_config.TextColumn("Account Type"),
+        "_connector_name_full": None,
         "price": st.column_config.NumberColumn(
             "Price",
             format="%.4f"
@@ -597,7 +612,7 @@ def render_orders_table(orders_data):
                 for _, order in selected_orders.iterrows():
                     cancel_order(
                         order.get("account_name", ""),
-                        order.get("connector_name", ""),
+                        order.get("_connector_name_full") or order.get("connector_name", ""),
                         order.get("client_order_id", "")
                     )
             st.rerun()
@@ -1218,17 +1233,18 @@ def show_account_data():
 
     st.divider()
 
-    # Each tab draws from the selected account (and exchange), independent of the
-    # trading pair chosen in Account & Market — that pair only drives Market Data / trading.
-    positions = get_positions(st.session_state.selected_account)
+    # positions = get_positions(st.session_state.selected_account)  # re-enable with the Positions tab
 
     # Display in tabs - Balances first
-    tab1, tab2, tab3, tab4 = st.tabs(["💰 Balances", "📊 Positions", "📋 Active Orders", "📜 Order History"])
+    # NOTE: Positions tab is hidden for now; keep the code below for future use.
+    # To restore it, add "📊 Positions" back into the tab labels and re-enable the
+    # `with tab_positions: render_positions_table(positions)` block.
+    tab1, tab3, tab4 = st.tabs(["💰 Balances", "📋 Active Orders", "📜 Order History"])
 
     with tab1:
         render_balances_table()
-    with tab2:
-        render_positions_table(positions)
+    # with tab_positions:
+    #     render_positions_table(positions)
     with tab3:
         render_active_orders_tab()
     with tab4:
@@ -1434,6 +1450,11 @@ def render_balances_table():
 
     df = convert_price_columns(df, ["price", "value"], USDT_INR_RATE)
 
+    if "exchange" in df.columns:
+        split = df["exchange"].apply(split_credential_key)
+        df["exchange"] = split.str[0]
+        df.insert(1, "account_type", split.str[1])
+
     total_value = df['value'].sum()
     st.metric("Total Portfolio Value", f"{CURRENCY}{total_value:,.2f}")
 
@@ -1442,6 +1463,8 @@ def render_balances_table():
         use_container_width=True,
         hide_index=True,
         column_config={
+            "exchange": st.column_config.TextColumn("Exchange"),
+            "account_type": st.column_config.TextColumn("Account Type"),
             "total": st.column_config.NumberColumn(
                 "Total Balance",
                 format="%.6f"

@@ -43,7 +43,6 @@ def private_pages():
                 icon="🔑",
                 url_path="creds"
             ),
-            # Portfolio page hidden (code kept in frontend/pages/orchestration/portfolio/)
             # st.Page(
             #     "frontend/pages/orchestration/portfolio/app.py",
             #     title="Portfolio",
