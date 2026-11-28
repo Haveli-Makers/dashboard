@@ -23,6 +23,7 @@ CONFIG_PAGES: Dict[str, ConfigMetadata] = {
     "SuperTrend V1": {"module": "frontend.pages.config.supertrend_v1.app", "slug": "supertrend_v1", "icon": "👨‍🔬"},
     "XEMM Controller": {"module": "frontend.pages.config.xemm_controller.app", "slug": "xemm_controller", "icon": "⚡️"},
     "Spreadkiller": {"module": "frontend.pages.config.spreadkiller.app", "slug": "spreadkiller", "icon": "🦈"},
+    "Script Config": {"module": "frontend.pages.config.script_config.app", "slug": "script_config", "icon": "📜"},
 }
 
 DEFAULT_CONFIG_NAME = "Grid Strike"
